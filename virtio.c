@@ -106,6 +106,8 @@
 #define VHOST_NDESCS (PKT_BUF_BYTES / 65520)
 static_assert(!(VHOST_NDESCS & (VHOST_NDESCS - 1)),
 			 "Number of vhost descs must be a power of two by standard");
+// (ammar) why do we need here a struct to keep track of the free descriptors
+// then later add them to the available descriptors on the variable vring_avail_0
 static struct {
 	/* Number of free descriptors */
 	uint16_t num_free;
@@ -1104,6 +1106,12 @@ enum set_vring_err set_vring_for_queue(struct ctx *c, int queue_idx, int tap_fd)
 			vring_avail_all[0].avail.ring[i] = htole16(i);
 
 		rx_pkt_refill(c);
+	}
+
+	if (queue_idx == 1) {
+    	for (i = 0; i < (VHOST_NDESCS - 1); ++i) {
+            vring_desc[1][i].next = i+1;
+    	}
 	}
 
 	debug("qid: %d", file.index);

@@ -1590,6 +1590,10 @@ static void rx_pkt_refill(struct ctx *c)
 	if (!vqs[0].num_free)
 		return;
 
+	// add to vring avail idx (which is a grow only counter that gets modded
+	// with the queue length on access)
+	// where is this vqs symbol even defined ?
+	// btw, vring_avail_0 and 1 are no longer things we have defined
 	vring_avail_0.avail.idx += vqs[0].num_free;
 	vqs[0].num_free = 0;
 	vhost_kick(&vring_used_0.used, c->vq[0].kick_fd);
