@@ -849,7 +849,7 @@ static void udp_buf_sock_to_tap(const struct ctx *c, int s, int n,
 	for (i = 0; i < n; i++)
 		udp_tap_prepare(udp_mh_recv, i, omac, toside, false);
 
-	tap_send_frames(c, &udp_l2_iov[0][0], UDP_NUM_IOVS, n);
+	tap_send_frames(c, &udp_l2_iov[0][0], UDP_NUM_IOVS, n, false);
 }
 
 /**

@@ -129,7 +129,7 @@ unsigned long tap_l2_max_len(const struct ctx *c)
  * @data:	Packet buffer
  * @l2len:	Total L2 packet length
  */
-void tap_send_single(const struct ctx *c, const void *data, size_t l2len)
+void tap_send_single(const struct ctx *c, const void *data, size_t l2len, bool vhost)
 {
 	uint8_t padded[ETH_ZLEN] = { 0 };
 	struct iovec iov[2];
@@ -154,7 +154,7 @@ void tap_send_single(const struct ctx *c, const void *data, size_t l2len)
 		iov[iovcnt].iov_len = l2len;
 		iovcnt++;
 
-		tap_send_frames(c, iov, iovcnt, 1);
+		tap_send_frames(c, iov, iovcnt, 1, vhost);
 		break;
 	case MODE_VU:
 		vu_send_single(c, data, l2len);
@@ -278,7 +278,7 @@ void tap_udp4_send(const struct ctx *c, struct in_addr src, in_port_t sport,
 	char *data = tap_push_uh4(uh, src, sport, dst, dport, in, dlen);
 
 	memcpy(data, in, dlen);
-	tap_send_single(c, buf, dlen + (data - buf));
+	tap_send_single(c, buf, dlen + (data - buf), false);
 }
 
 /**
@@ -301,7 +301,7 @@ void tap_icmp4_send(const struct ctx *c, struct in_addr src, struct in_addr dst,
 	memcpy(icmp4h, in, l4len);
 	csum_icmp4(icmp4h, icmp4h + 1, l4len - sizeof(*icmp4h));
 
-	tap_send_single(c, buf, l4len + ((char *)icmp4h - buf));
+	tap_send_single(c, buf, l4len + ((char *)icmp4h - buf), false);
 }
 
 /**
@@ -386,7 +386,7 @@ void tap_udp6_send(const struct ctx *c,
 	char *data = tap_push_uh6(uh, src, sport, dst, dport, in, dlen);
 
 	memcpy(data, in, dlen);
-	tap_send_single(c, buf, dlen + (data - buf));
+	tap_send_single(c, buf, dlen + (data - buf), false);
 }
 
 /**
@@ -410,7 +410,7 @@ void tap_icmp6_send(const struct ctx *c,
 	memcpy(icmp6h, in, l4len);
 	csum_icmp6(icmp6h, src, dst, icmp6h + 1, l4len - sizeof(*icmp6h));
 
-	tap_send_single(c, buf, l4len + ((char *)icmp6h - buf));
+	tap_send_single(c, buf, l4len + ((char *)icmp6h - buf), false);
 }
 
 static void vhost_kick(struct vring_used *used, int kick_fd) {
@@ -425,8 +425,9 @@ static void vhost_kick(struct vring_used *used, int kick_fd) {
 		eventfd_write(kick_fd, 1);
 }
 
+
 /**
- * tap_send_frames_pasta() - Send multiple frames to the pasta tap
+ * tap_send_frames_vhost() - Send multiple frames to the pasta tap
  * @c:			Execution context
  * @iov:		Array of buffers
  * @bufs_per_frame:	Number of buffers (iovec entries) per frame
@@ -436,15 +437,89 @@ static void vhost_kick(struct vring_used *used, int kick_fd) {
  * @bufs_per_frame contiguous buffers representing a single frame.
  *
  * Return: number of frames successfully sent
- *
- * #syscalls:pasta write
  */
-static size_t tap_send_frames_pasta(const struct ctx *c,
+static size_t tap_send_frames_vhost(const struct ctx *c,
 				    const struct iovec *iov,
 				    size_t bufs_per_frame, size_t nframes)
 {
+	size_t i;
+	// at this point, iov is an array of iovec with base and len
+	// bufs per frame is gonna be a constant that is passed by each protocol's caller
+	// as its what is aware of the iov split for that proto. so udp will pas udp_n_descriptors,
+	// tcp will pass tcp_n_descriptors, and all others use tap_send_single, so a single iov is expected
+	// and then nframes is gonna be the actual acount of ethernet frames
+
+	for (i = 0; i < nframes; i++) {
+		size_t j;
+
+		// so here we are essentially gonna be allocating a descriptor per iov frame ?
+		// makes sense i guess
+		if (vqs[1].num_free < bufs_per_frame)
+			return i;
+
+		// access tbhe avail ring at vring avail .index + i mod the number of descriptors
+		// set it to be equal a conversion to little endian 16 on this struct we were weirded out about
+		// at vring_idx mod the count of descriptors ?
+		vring_avail_1.avail.ring[(vring_avail_1.avail.idx + i) % VHOST_NDESCS] = htole16(vqs[1].vring_idx) % VHOST_NDESCS;
+		vqs[1].ndescs[(vring_avail_1.avail.idx + i) % VHOST_NDESCS] = bufs_per_frame;
+		vqs[1].num_free -= bufs_per_frame;
+
+		// for each iov
+		for (j = 0; j < bufs_per_frame; ++j) {
+		    // aquire a descriptor from the tx queue (they have no address information)
+			struct vring_desc *desc = &vring_desc[1][vqs[1].vring_idx % VHOST_NDESCS];
+			// access the iov for that fragment of the total eth frame by multiplying
+			// i (the index of the ethernet frame being processed) by how many iovs we have per frame
+			// and adding j (the index of the frame fragment being processed)
+			const struct iovec *iov_i = &iov[i * bufs_per_frame + j];
+
+			// set the address of the descriptor to be the iov base and the len of course
+			desc->addr = (uint64_t)iov_i->iov_base;
+			desc->len = iov_i->iov_len;
+			// set the next flag on the descriptor if this frame fragment is not the last one
+			// in the frame
+			desc->flags = (j == bufs_per_frame - 1) ? 0 : htole16(VRING_DESC_F_NEXT);
+			// advance the vring index by 1
+			vqs[1].vring_idx++;
+		}
+	}
+
+	smp_wmb();
+	vring_avail_1.avail.idx = htole16(le16toh(vring_avail_1.avail.idx) + nframes);
+
+	vhost_kick(&vring_used_1.used, c->vq[1].kick_fd);
+
+	return nframes;
+}
+
+
+/**
+ * tap_send_frames_pasta() - Send multiple frames to the pasta tap
+ * @c:			Execution context
+ * @iov:		Array of buffers
+ * @bufs_per_frame:	Number of buffers (iovec entries) per frame
+ * @nframes:		Number of frames to send
+ * @vhost:             Use vhost-kernel or not
+ *
+ * @iov must have total length @bufs_per_frame * @nframes, with each set of
+ * @bufs_per_frame contiguous buffers representing a single frame.
+ *
+ * Return: number of frames successfully sent (or queued)
+ *
+ * #syscalls:pasta write
+ */
+// iov len = bufs_per_frame * n frames. then i am guessing we split a single frame
+// into equal buffers per frame, number of frames is how many of those eth frames we have
+// and the iovec groups all those frame fragments into a single sendable structure
+static size_t tap_send_frames_pasta(const struct ctx *c,
+				    const struct iovec *iov,
+				    size_t bufs_per_frame, size_t nframes, bool vhost)
+{
 	size_t nbufs = bufs_per_frame * nframes;
 	size_t i;
+
+	if (vhost)
+		return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
 
 	for (i = 0; i < nbufs; i += bufs_per_frame) {
 		ssize_t rc = writev(c->fd_tap, iov + i, bufs_per_frame);
@@ -530,14 +605,15 @@ static size_t tap_send_frames_passt(const struct ctx *c,
  * @iov:		Array of buffers, each containing one frame (with L2 headers)
  * @bufs_per_frame:	Number of buffers (iovec entries) per frame
  * @nframes:		Number of frames to send
+ * @vhost:		Use vhost-kernel or not
  *
  * @iov must have total length @bufs_per_frame * @nframes, with each set of
  * @bufs_per_frame contiguous buffers representing a single frame.
  *
- * Return: number of frames actually sent, or accounted as sent
+ * Return: number of frames actually sent (or queued)
  */
 size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
-		       size_t bufs_per_frame, size_t nframes)
+		       size_t bufs_per_frame, size_t nframes, bool vhost)
 {
 	size_t m;
 
@@ -549,7 +625,7 @@ size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
 
 	switch (c->mode) {
 	case MODE_PASTA:
-		m = tap_send_frames_pasta(c, iov, bufs_per_frame, nframes);
+		m = tap_send_frames_pasta(c, iov, bufs_per_frame, nframes, vhost);
 		break;
 	case MODE_PASST:
 		m = tap_send_frames_passt(c, iov, bufs_per_frame, nframes);

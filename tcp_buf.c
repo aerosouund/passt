@@ -152,7 +152,7 @@ void tcp_payload_flush(const struct ctx *c, const struct timespec *now)
 	size_t m;
 
 	m = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS,
-			    tcp_payload_used);
+			    tcp_payload_used, false);
 	if (m != tcp_payload_used) {
 		tcp_revert_seq(c, &tcp_frame_conns[m], &tcp_l2_iov[m],
 			       tcp_payload_used - m, now);

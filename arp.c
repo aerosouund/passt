@@ -112,7 +112,7 @@ int arp(const struct ctx *c, struct iov_tail *data)
 	memcpy(resp.am.tha,		am->sha,	sizeof(resp.am.tha));
 	memcpy(resp.am.tip,		am->sip,	sizeof(resp.am.tip));
 
-	tap_send_single(c, &resp, sizeof(resp));
+	tap_send_single(c, &resp, sizeof(resp), false);
 
 	return 1;
 }

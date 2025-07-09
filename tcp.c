@@ -2285,7 +2285,7 @@ static void tcp_rst_no_conn(const struct ctx *c, int af,
 
 	tcp_update_csum(psum, rsth, &payload, 0);
 	rst_l2len = ((char *)rsth - buf) + sizeof(*rsth);
-	tap_send_single(c, buf, rst_l2len);
+	tap_send_single(c, buf, rst_l2len, false);
 }
 
 /**

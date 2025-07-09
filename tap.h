@@ -116,9 +116,9 @@ void tap_udp6_send(const struct ctx *c,
 void tap_icmp6_send(const struct ctx *c,
 		    const struct in6_addr *src, const struct in6_addr *dst,
 		    const void *in, const void *src_mac, size_t l4len);
-void tap_send_single(const struct ctx *c, const void *data, size_t l2len);
+void tap_send_single(const struct ctx *c, const void *data, size_t l2len, bool vhost);
 size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
-		       size_t bufs_per_frame, size_t nframes);
+		       size_t bufs_per_frame, size_t nframes, bool vhost);
 void eth_update_mac(struct ethhdr *eh,
 		    const unsigned char *eth_d, const unsigned char *eth_s);
 bool tap_is_ready(const struct ctx *c);
