@@ -87,6 +87,8 @@
 
 #define VIRTQUEUE_MAX_SIZE 1024
 
+/* (ammar): where is this used ? */
+#define FRAGMENT_MSG_RATE	10  /* # seconds between fragment warnings */
 
 #define VHOST_VIRTIO         0xAF
 #define VHOST_GET_FEATURES   _IOR(VHOST_VIRTIO, 0x00, __u64)
@@ -127,11 +129,10 @@ static union {
 static union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
 
 
-/* all descs ring + 2rings * 2vqs + tx pkt buf + rx pkt buf */
 // (ammar): is this thing even needed ? i will remove the memory sharing
 // for unneeded regions from below then go back to check if we can dismiss
 // this type completely
-#define N_VHOST_REGIONS 1
+#define N_VHOST_REGIONS 7
 union {
 	struct vhost_memory mem;
 	char buf[offsetof(struct vhost_memory, regions[N_VHOST_REGIONS])];
@@ -1014,14 +1015,30 @@ enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx)
  * be interpreted directly rather than translated.
  */
 int setup_memory_table(struct ctx *c) {
+#define VHOST_MEMORY_REGION_PTR(addr, size) \
+    (struct vhost_memory_region) { \
+        .guest_phys_addr = (uintptr_t)addr, \
+        .memory_size = size - 1,
+        .userspace_addr  = (uintptr_t)addr, \
+    }
+#define VHOST_MEMORY_REGION(elem) VHOST_MEMORY_REGION_PTR(&elem, sizeof(elem))
+
     struct vhost_memory_region region = {
         .guest_phys_addr = (uintptr_t)pkt_buf,
 		.memory_size = sizeof(pkt_buf) - 1,
 		.userspace_addr = (uintptr_t)pkt_buf,
     };
 
-	vhost_memory.mem.regions[0] = region;
-	vhost_memory.mem.nregions = 1;
+    /* we are sharing this memory now yes, but does it get used
+     * during setting used descriptors on the tx path ? */
+    vhost_memory.mem.regions[0] = VHOST_MEMORY_REGION(pkt_buf);
+   	vhost_memory.mem.regions[1] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
+	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp4_eth_src);
+	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp6_eth_src);
+	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp4_payload_ip);
+	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp6_payload_ip);
+	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(tcp_payload);
+	vhost_memory.mem.nregions = 7;
 
 	return ioctl(c->vhost_fd, VHOST_SET_MEM_TABLE, &vhost_memory.mem);
 }
