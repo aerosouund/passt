@@ -1654,11 +1654,10 @@ static int tap_ns_tun(void *arg)
 	    enum eventfd_setup_err e = setup_eventfds(c, i);
 		if (e != 0)
 		    die("failed to setup event fds for queue %d: (%d)", i, e);
-	}
+	};
 
 	if (setup_memory_table(c) < 0)
 		die_perror("VHOST_SET_MEM_TABLE ioctl on /dev/vhost-net failed");
-
 
 	/* Duplicating foreach queue to follow the exact order from QEMU */
 	for (i = 0; i < ARRAY_SIZE(c->vq); i++) {

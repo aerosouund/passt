@@ -895,6 +895,9 @@ enum eventfd_setup_err {
 	EVENTFD_SETUP_ERR_SET_VRING_NUM,
 	EVENTFD_SETUP_ERR_KICK_FD,
 	EVENTFD_SETUP_ERR_SET_VRING_KICK,
+	EVENTFD_SETUP_ERR_ERR_FD,
+	EVENTFD_SETUP_ERR_SET_ERR_FD,
+	EVENTFD_SETUP_ERR_ERR_EPOLL_ADD,
 };
 
 /**
@@ -910,6 +913,8 @@ enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx)
 	int vhost_fd = c->fd_vhost;
 	struct vhost_vring_file call_file = { .index = queue_idx };
 	struct vhost_vring_file kick_file = { .index = queue_idx };
+	struct vhost_vring_file err_file = { .index = queue_idx };
+
 	struct vhost_vring_state state = {
 		.index = queue_idx,
 		.num = VHOST_NDESCS,
@@ -943,6 +948,34 @@ enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx)
 		return EVENTFD_SETUP_ERR_EPOLL_ADD;
 	}
 	c->vq[queue_idx].call_fd = call_file.fd;
+
+	err_file.fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (err_file.fd < 0) {
+		warn_perror("Failed to create error eventfd");
+		close(call_file.fd);
+		return EVENTFD_SETUP_ERR_ERR_FD;
+	}
+
+	rc = ioctl(vhost_fd, VHOST_SET_VRING_ERR, &err_file);
+	if (rc < 0) {
+		warn_perror("VHOST_SET_VRING_ERR ioctl on /dev/vhost-net failed");
+		close(err_file.fd);
+		close(call_file.fd);
+		return EVENTFD_SETUP_ERR_SET_ERR_FD;
+	}
+
+	/* reuse ref and ev, only replacing the fd type and number */
+	ref.type = EPOLL_TYPE_VHOST_ERROR;
+	ref.fd = err_file.fd;
+	ev.data.u64 = ref.u64;
+	rc = epoll_ctl(c->epollfd, EPOLL_CTL_ADD, ref.fd, &ev);
+	if (rc < 0) {
+		warn_perror("Failed to add error eventfd to epoll");
+		close(err_file.fd);
+		close(call_file.fd);
+		return EVENTFD_SETUP_ERR_ERR_EPOLL_ADD;
+	}
+	c->vq[queue_idx].err_fd = err_file.fd;
 
 	/* Set the number of descriptors for this queue */
 	rc = ioctl(vhost_fd, VHOST_SET_VRING_NUM, &state);

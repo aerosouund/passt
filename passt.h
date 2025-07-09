@@ -294,6 +294,7 @@ struct ctx {
 	struct {
 		int kick_fd;
 		int call_fd;
+		int err_fd;
 	} vq[2];
 
 	int no_dns;

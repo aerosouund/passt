@@ -90,6 +90,7 @@ char *epoll_type_str[] = {
 	[EPOLL_TYPE_CONF_LISTEN]	= "configuration listening socket",
 	[EPOLL_TYPE_CONF]		= "configuration socket",
 	[EPOLL_TYPE_VHOST_CALL]		= "vhost-kernel call socket",
+	[EPOLL_TYPE_VHOST_ERROR]	= "vhost-kernel error socket",
 };
 static_assert(ARRAY_SIZE(epoll_type_str) == EPOLL_NUM_TYPES,
 	      "epoll_type_str[] doesn't match enum epoll_type");
@@ -303,6 +304,10 @@ static void passt_worker(void *opaque, int nfds, struct epoll_event *events)
 		case EPOLL_TYPE_VHOST_CALL:
 			tap_vhost_input(c, ref, &now);
 			break;
+		case EPOLL_TYPE_VHOST_ERROR:
+			/* TODO re-initialize vhost */
+			die("Error on vhost-kernel socket");
+			break;
 		default:
 			/* Can't happen */
 			assert(0);
@@ -450,6 +455,5 @@ loop:
 		die_perror("epoll_wait() failed in main loop");
 
 	passt_worker(c, nfds, events);
-
 	goto loop;
 }
