@@ -89,6 +89,7 @@ char *epoll_type_str[] = {
 	[EPOLL_TYPE_NL_NEIGH]		= "netlink neighbour notifier socket",
 	[EPOLL_TYPE_CONF_LISTEN]	= "configuration listening socket",
 	[EPOLL_TYPE_CONF]		= "configuration socket",
+	[EPOLL_TYPE_VHOST_CALL]		= "vhost-kernel call socket",
 };
 static_assert(ARRAY_SIZE(epoll_type_str) == EPOLL_NUM_TYPES,
 	      "epoll_type_str[] doesn't match enum epoll_type");
@@ -298,6 +299,9 @@ static void passt_worker(void *opaque, int nfds, struct epoll_event *events)
 			break;
 		case EPOLL_TYPE_CONF:
 			conf_handler(c, eventmask);
+			break;
+		case EPOLL_TYPE_VHOST_CALL:
+			tap_vhost_input(c, ref, &now);
 			break;
 		default:
 			/* Can't happen */

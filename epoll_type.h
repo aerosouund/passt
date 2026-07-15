@@ -50,6 +50,8 @@ enum epoll_type {
 	EPOLL_TYPE_CONF_LISTEN,
 	/* Configuration socket */
 	EPOLL_TYPE_CONF,
+	/* vhost-kernel call socket */
+	EPOLL_TYPE_VHOST_CALL,
 
 	EPOLL_NUM_TYPES,
 };

@@ -257,11 +257,14 @@ struct ctx {
 	int fd_control;
 	int fd_repair_listen;
 	int fd_repair;
+	/* TODO document all added fields */
+	int fd_vhost;
 	unsigned char our_tap_mac[ETH_ALEN];
 	unsigned char guest_mac[ETH_ALEN];
 	uint16_t mtu;
 
 	uint64_t hash_secret[2];
+	uint64_t virtio_features;
 
 	int ifi4;
 	struct ip4_ctx ip4;
@@ -287,6 +290,11 @@ struct ctx {
 	struct udp_ctx udp;
 	int no_icmp;
 	struct icmp_ctx icmp;
+
+	struct {
+		int kick_fd;
+		int call_fd;
+	} vq[2];
 
 	int no_dns;
 	int no_dns_search;

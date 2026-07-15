@@ -13,6 +13,7 @@
  *
  */
 
+#include "common.h"
 #include <sched.h>
 #include <unistd.h>
 #include <signal.h>
@@ -409,6 +410,18 @@ void tap_icmp6_send(const struct ctx *c,
 	csum_icmp6(icmp6h, src, dst, icmp6h + 1, l4len - sizeof(*icmp6h));
 
 	tap_send_single(c, buf, l4len + ((char *)icmp6h - buf));
+}
+
+static void vhost_kick(struct vring_used *used, int kick_fd) {
+	/* We need to expose available array entries before checking avail
+	 * event.
+	 *
+	 * TODO: Does eventfd_write already do this?
+	 */
+	smp_mb();
+
+	if (!(used->flags & VRING_USED_F_NO_NOTIFY))
+		eventfd_write(kick_fd, 1);
 }
 
 /**
@@ -1531,6 +1544,84 @@ void tap_listen_handler(struct ctx *c, uint32_t events)
 	tap_start_connection(c);
 }
 
+static void *virtqueue_get_rx_buf(unsigned qid, unsigned *len)
+{
+	struct vring_used *used = !qid ? &vring_used_0.used : &vring_used_1.used;
+	uint32_t i;
+	uint16_t used_idx, last_used;
+
+	/* TODO think if this has races with previous eventfd_read */
+	/* TODO we could improve performance with a shadow_used_idx */
+	used_idx = le16toh(used->idx);
+
+	smp_rmb();
+
+	if (used_idx == vqs[0].last_used_idx) {
+		*len = 0;
+		return NULL;
+	}
+
+	last_used = vqs[0].last_used_idx % VHOST_NDESCS;
+	i = le32toh(used->ring[last_used].id);
+	*len = le32toh(used->ring[last_used].len);
+
+	/* Make sure the kernel is consuming the descriptors in order */
+	if (i != last_used) {
+		die("vhost: id %u at used position %u != %u", i, last_used, i);
+		return NULL;
+	}
+
+	if (*len > PKT_BUF_BYTES/VHOST_NDESCS) {
+		warn("vhost: id %d len %u > %zu", i, *len, PKT_BUF_BYTES/VHOST_NDESCS);
+		return NULL;
+	}
+
+	/* TODO check if the id is valid and it has not been double used */
+	vqs[0].last_used_idx++;
+	vqs[0].num_free++;
+	return pkt_buf + i * (PKT_BUF_BYTES/VHOST_NDESCS);
+}
+
+/* TODO this assumes the kernel consumes descriptors in order */
+static void rx_pkt_refill(struct ctx *c)
+{
+	/* TODO: tune this threshold */
+	if (!vqs[0].num_free)
+		return;
+
+	vring_avail_0.avail.idx += vqs[0].num_free;
+	vqs[0].num_free = 0;
+	vhost_kick(&vring_used_0.used, c->vq[0].kick_fd);
+}
+
+void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *now)
+{
+	eventfd_read(ref.fd, (eventfd_t[]){ 0 });
+
+	tap_flush_pools();
+
+	while (true) {
+		struct virtio_net_hdr *hdr;
+		unsigned len;
+
+		hdr = virtqueue_get_rx_buf(ref.queue, &len);
+		if (!hdr)
+			break;
+
+		if (len < sizeof(*hdr)) {
+			warn("vhost: invalid len %u", len);
+			continue;
+		}
+
+		// (ammar): the signature of this function has changed, we no longer pass a length
+		// and a pointer. we construct an iov tail before passing it to tap_add_packet
+		tap_add_packet(c, len - sizeof(*hdr), (void *)(hdr+1), now);
+	}
+
+	tap_handler(c, now);
+	rx_pkt_refill(c);
+}
+
 /**
  * tap_ns_tun() - Get tuntap fd in namespace
  * @c:		Execution context
@@ -1541,19 +1632,42 @@ void tap_listen_handler(struct ctx *c, uint32_t events)
  */
 static int tap_ns_tun(void *arg)
 {
-	struct ifreq ifr = { .ifr_flags = IFF_TAP | IFF_NO_PI };
-	int flags = O_RDWR | O_NONBLOCK | O_CLOEXEC;
 	struct ctx *c = (struct ctx *)arg;
+	struct ifreq ifr = { .ifr_flags = IFF_TAP | IFF_NO_PI };
+	unsigned i;
 	int fd, rc;
 
 	c->fd_tap = -1;
 	memcpy(ifr.ifr_name, c->pasta_ifn, IFNAMSIZ);
 	ns_enter(c);
 
-	fd = open("/dev/net/tun", flags);
+	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
 	if (fd < 0)
 		die_perror("Failed to open() /dev/net/tun");
 
+	/* initialize the vhost-net dev file descriptor */
+	enum vhost_setup_err e = setup_vhost_net(c);
+	if (e != 0)
+	    die("vhost-net setup failed (%d)", e);
+
+	for (i = 0; i < ARRAY_SIZE(c->vq); i++) {
+	    enum eventfd_setup_err e = setup_eventfds(c, i);
+		if (e != 0)
+		    die("failed to setup event fds for queue %d: (%d)", i, e);
+	}
+
+	if (setup_memory_table(c) < 0)
+		die_perror("VHOST_SET_MEM_TABLE ioctl on /dev/vhost-net failed");
+
+
+	/* Duplicating foreach queue to follow the exact order from QEMU */
+	for (i = 0; i < ARRAY_SIZE(c->vq); i++) {
+	    enum set_vring_err ve = set_vring_for_queue(c, i, fd);
+	    if (ve != VRING_SETUP_OK)
+			die("vring setup failed for queue %d: (%d)", i, ve);
+	}
+
+	// (ammar): was this ifr always present ?
 	rc = ioctl(fd, (int)TUNSETIFF, &ifr);
 	if (rc < 0)
 		die_perror("TUNSETIFF ioctl on /dev/net/tun failed");
