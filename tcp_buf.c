@@ -22,6 +22,8 @@
 
 #include <netinet/tcp.h>
 
+#include <linux/virtio_net.h>
+
 #include "util.h"
 #include "ip.h"
 #include "iov.h"
@@ -42,7 +44,7 @@
 /* Ethernet header for IPv4 and IPv6 frames */
 static struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
-static struct tap_hdr		tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+static struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 
 /* IP headers for IPv4 and IPv6 */
 static struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
@@ -61,6 +63,7 @@ static unsigned int tcp_payload_used;
 /* recvmsg()/sendmsg() data for tap */
 static struct iovec	iov_sock		[TCP_FRAMES_MEM + DISCARD_IOV_NUM];
 
+// a 128 x 5 multi dimesional array (128 frames by the count of layers we split an iov by)
 static struct iovec	tcp_l2_iov[TCP_FRAMES_MEM][TCP_NUM_IOVS];
 
 /**
@@ -73,6 +76,14 @@ void tcp_update_l2_buf(const unsigned char *eth_d)
 
 	for (i = 0; i < TCP_FRAMES_MEM; i++)
 		eth_update_mac(&tcp_eth_hdr[i], eth_d, NULL);
+}
+
+static inline struct iovec iov_from_virtio_net_hdr(struct virtio_net_hdr *hdr)
+{
+    return (struct iovec){
+            .iov_base = hdr,
+            .iov_len = sizeof(*hdr),
+    };
 }
 
 /**
@@ -90,10 +101,17 @@ void tcp_sock_iov_init(const struct ctx *c)
 		tcp4_payload_ip[i] = iph;
 	}
 
+	// for all the frames in range TCP_FRAMES_MEM (represents what ?)
 	for (i = 0; i < TCP_FRAMES_MEM; i++) {
+	    // create an iov by accessing tcp_l2_iov global array (the place where we
+		// hypothetically receive data into)
 		struct iovec *iov = tcp_l2_iov[i];
 
-		iov[TCP_IOV_TAP] = tap_hdr_iov(c, &tcp_payload_tap_hdr[i]);
+		// replace the 4 bytes header we expected from the tap (the frame length)
+		// with an iov that wraps the vnet header. whats the goal though ?
+		// and whats downstream from this ? reading this entry will no longer yield the
+		// frame size like before
+		iov[TCP_IOV_TAP] = iov_from_virtio_net_hdr(&tcp_payload_tap_hdr[i]);
 		iov[TCP_IOV_ETH].iov_len = sizeof(struct ethhdr);
 		iov[TCP_IOV_PAYLOAD].iov_base = &tcp_payload[i];
 		iov[TCP_IOV_ETH_PAD].iov_base = eth_pad;
@@ -181,6 +199,9 @@ static void tcp_l2_buf_fill_headers(const struct ctx *c,
 {
 	struct iov_tail tail = IOV_TAIL(&iov[TCP_IOV_PAYLOAD], 1, 0);
 	struct tcphdr th_storage, *th = IOV_REMOVE_HEADER(&tail, th_storage);
+	// in this place for example, if our previous replacement holds
+	// then iov_base will no longer be a tap_hdr pointer. but what does this mean
+	// further down the line ?
 	struct tap_hdr *taph = iov[TCP_IOV_TAP].iov_base;
 	const struct flowside *tapside = TAPFLOW(conn);
 	const struct in_addr *a4 = inany_v4(&tapside->oaddr);

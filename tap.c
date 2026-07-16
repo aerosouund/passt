@@ -564,7 +564,7 @@ size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
 		      nframes - m, nframes);
 
 	pcap_multiple(iov, bufs_per_frame, m,
-		      c->mode == MODE_PASST ? sizeof(uint32_t) : 0);
+	    c->mode == MODE_PASST ? sizeof(uint32_t) : sizeof(struct virtio_net_hdr));
 
 	return m;
 }
