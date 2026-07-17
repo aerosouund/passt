@@ -365,6 +365,12 @@ static void udp_tap_prepare(const struct mmsghdr *mmh,
 			    const struct flowside *toside,
 			    bool no_udp_csum)
 {
+    // given a multimsghdr
+    // access the udp_l2_iov at index (the index of the received message)
+    // which the udp l2 iov looks like this [MAX_UDP_FRAMES][number of iovs in the frame]
+    // so a single entry looks like [iov{ base: ptr to tap hdr}, iov{}, iov{}.
+    // this function needs to be vhost aware, if vhost is requested, place the first iov
+    // as an iov with a pointer to a vnet header, not a tap header
 	struct iovec (*tap_iov)[UDP_NUM_IOVS] = &udp_l2_iov[idx];
 	struct udphdr *uh = (*tap_iov)[UDP_IOV_PAYLOAD].iov_base;
 	struct iov_tail payload = IOV_TAIL(&(*tap_iov)[UDP_IOV_PAYLOAD], 1,
@@ -849,6 +855,8 @@ static void udp_buf_sock_to_tap(const struct ctx *c, int s, int n,
 	for (i = 0; i < n; i++)
 		udp_tap_prepare(udp_mh_recv, i, omac, toside, false);
 
+	// the l2 iov is gonna be prepared here, which is what we queue for sending.
+	// it gets passed as an iovec buffer
 	tap_send_frames(c, &udp_l2_iov[0][0], UDP_NUM_IOVS, n, false);
 }
 
