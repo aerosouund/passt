@@ -74,75 +74,25 @@
 
 #include "passt.h"
 #include <assert.h>
+#include <limits.h>
 #include <stddef.h>
 #include <endian.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <limits.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdlib.h>
 
 #include "util.h"
 #include "virtio.h"
 #include "vhost_user.h"
-
-#define VIRTQUEUE_MAX_SIZE 1024
-
-/* (ammar): where is this used ? */
-#define FRAGMENT_MSG_RATE	10  /* # seconds between fragment warnings */
-
-#define VHOST_VIRTIO         0xAF
-#define VHOST_GET_FEATURES   _IOR(VHOST_VIRTIO, 0x00, __u64)
-#define VHOST_SET_FEATURES   _IOW(VHOST_VIRTIO, 0x00, __u64)
-#define VHOST_SET_OWNER	     _IO(VHOST_VIRTIO, 0x01)
-#define VHOST_SET_MEM_TABLE  _IOW(VHOST_VIRTIO, 0x03, struct vhost_memory)
-#define VHOST_SET_VRING_NUM  _IOW(VHOST_VIRTIO, 0x10, struct vhost_vring_state)
-#define VHOST_SET_VRING_ADDR _IOW(VHOST_VIRTIO, 0x11, struct vhost_vring_addr)
-#define VHOST_SET_VRING_KICK _IOW(VHOST_VIRTIO, 0x20, struct vhost_vring_file)
-#define VHOST_SET_VRING_CALL _IOW(VHOST_VIRTIO, 0x21, struct vhost_vring_file)
-#define VHOST_SET_VRING_ERR  _IOW(VHOST_VIRTIO, 0x22, struct vhost_vring_file)
-#define VHOST_SET_BACKEND_FEATURES _IOW(VHOST_VIRTIO, 0x25, __u64)
-#define VHOST_NET_SET_BACKEND _IOW(VHOST_VIRTIO, 0x30, struct vhost_vring_file)
-
-#define VHOST_NDESCS (PKT_BUF_BYTES / 65520)
-static_assert(!(VHOST_NDESCS & (VHOST_NDESCS - 1)),
-			 "Number of vhost descs must be a power of two by standard");
-// (ammar) why do we need here a struct to keep track of the free descriptors
-// then later add them to the available descriptors on the variable vring_avail_0
-static struct {
-	/* Number of free descriptors */
-	uint16_t num_free;
-
-	/* Last used idx processed */
-	uint16_t last_used_idx;
-} vqs[2];
-
-// don't use zero and one. use tx and rx from passt perspective
-static struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE)));
-static union {
-	struct vring_avail avail;
-	char buf[offsetof(struct vring_avail, ring[VHOST_NDESCS])];
-} vring_avail_u;
-static union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
-
-static union {
-	struct vring_used used;
-	char buf[offsetof(struct vring_used, ring[VHOST_NDESCS])];
-} vring_used_u;
-static union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
-
-
-// (ammar): is this thing even needed ? i will remove the memory sharing
-// for unneeded regions from below then go back to check if we can dismiss
-// this type completely
-#define N_VHOST_REGIONS 7
-union {
-	struct vhost_memory mem;
-	char buf[offsetof(struct vhost_memory, regions[N_VHOST_REGIONS])];
-} vhost_memory = {
-	.mem = {
-		.nregions = N_VHOST_REGIONS,
-	},
-};
+#include "tcp_buf.h"
+#include "epoll_ctl.h"
 
 /**
  * vu_gpa_to_va() - Translate guest physical address to our virtual address.
@@ -890,19 +840,6 @@ enum vhost_setup_err setup_vhost_net(struct ctx *c)
 	return VHOST_SETUP_OK;
 }
 
-enum eventfd_setup_err {
-	EVENTFD_SETUP_OK = 0,
-	EVENTFD_SETUP_ERR_CALL_FD,
-	EVENTFD_SETUP_ERR_SET_VRING_CALL,
-	EVENTFD_SETUP_ERR_EPOLL_ADD,
-	EVENTFD_SETUP_ERR_SET_VRING_NUM,
-	EVENTFD_SETUP_ERR_KICK_FD,
-	EVENTFD_SETUP_ERR_SET_VRING_KICK,
-	EVENTFD_SETUP_ERR_ERR_FD,
-	EVENTFD_SETUP_ERR_SET_ERR_FD,
-	EVENTFD_SETUP_ERR_ERR_EPOLL_ADD,
-};
-
 /**
  * setup_eventfds() - Set up call/kick eventfds and vring size for one queue
  * @c:		Execution context; c->fd_vhost must already be set
@@ -1020,7 +957,7 @@ int setup_memory_table(struct ctx *c) {
 #define VHOST_MEMORY_REGION_PTR(addr, size) \
     (struct vhost_memory_region) { \
         .guest_phys_addr = (uintptr_t)addr, \
-        .memory_size = size - 1,
+        .memory_size = size - 1, \
         .userspace_addr  = (uintptr_t)addr, \
     }
 #define VHOST_MEMORY_REGION(elem) VHOST_MEMORY_REGION_PTR(&elem, sizeof(elem))
@@ -1045,12 +982,6 @@ int setup_memory_table(struct ctx *c) {
 	return ioctl(c->vhost_fd, VHOST_SET_MEM_TABLE, &vhost_memory.mem);
 }
 
-
-enum set_vring_err {
-	VRING_SETUP_OK = 0,
-	VRING_SETUP_ERR_SET_ADDR,
-	VRING_SETUP_ERR_SET_BACKEND,
-};
 
 
 /**

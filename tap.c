@@ -62,6 +62,7 @@
 #include "vhost_user.h"
 #include "vu_common.h"
 #include "epoll_ctl.h"
+#include "virtio.h"
 // (ammar): there ws an include to tcp_buf here. is there anything we need from it ?
 
 /* Maximum allowed frame lengths (including L2 header) */
@@ -438,11 +439,34 @@ static void vhost_kick(struct vring_used *used, int kick_fd) {
  *
  * Return: number of frames successfully sent
  */
+/*
+ * Worked example, 2 UDP frames of 5 iovs each (bufs_per_frame = 5, nframes = 2),
+ * starting from vqs[1].last_used_idx = 0 and vqs[1].num_free = 128:
+ *
+ * iter 0 (frame 0):
+ *   avail.ring[0] = last_used_idx      -> avail.ring[0] = 0
+ *   num_free -= 5                      -> num_free = 123
+ *   build descriptors 0..4, incrementing last_used_idx once per descriptor
+ *   -> last_used_idx = 5
+ *
+ * iter 1 (frame 1):
+ *   avail.ring[1] = last_used_idx      -> avail.ring[1] = 5
+ *   num_free -= 5                      -> num_free = 118
+ *   build descriptors 5..9, incrementing last_used_idx once per descriptor
+ *   -> last_used_idx = 10
+ *
+ * after the loop:
+ *   avail.ring = [0, 5]   (head descriptor index of each frame's chain)
+ *   avail.idx += nframes  (2)
+ *   kick the device
+ */
 static size_t tap_send_frames_vhost(const struct ctx *c,
 				    const struct iovec *iov,
 				    size_t bufs_per_frame, size_t nframes)
 {
 	size_t i;
+	struct vring_avail avail_tx_q = vring_avail_all[1].avail;
+
 	// at this point, iov is an array of iovec with base and len
 	// bufs per frame is gonna be a constant that is passed by each protocol's caller
 	// as its what is aware of the iov split for that proto. so udp will pas udp_n_descriptors,
@@ -457,17 +481,23 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 		if (vqs[1].num_free < bufs_per_frame)
 			return i;
 
-		// access tbhe avail ring at vring avail .index + i mod the number of descriptors
-		// set it to be equal a conversion to little endian 16 on this struct we were weirded out about
-		// at vring_idx mod the count of descriptors ?
-		vring_avail_1.avail.ring[(vring_avail_1.avail.idx + i) % VHOST_NDESCS] = htole16(vqs[1].vring_idx) % VHOST_NDESCS;
-		vqs[1].ndescs[(vring_avail_1.avail.idx + i) % VHOST_NDESCS] = bufs_per_frame;
+		// write to the ring at the last writted index to it + i so we write to it a chain
+		// head per frame
+		avail_tx_q.ring[(avail_tx_q.idx + i) % VHOST_NDESCS] = htole16(vqs[1].last_used_idx) % VHOST_NDESCS;
+
+		/* the intent of the line below is to book keep that for this given descriptor index
+		denoted by avail_tx_q.idx + i mod the ndescs has allocated for itself bufs_per_frame 
+		descriptors. this will theoretically be helpful when i wanna reuse descs so i can know
+		how many descriptors are in every chain. but no code currently uses this or does this (the freeing)
+		so it would need to be revisted*/
+		// vqs[1].ndescs[(avail_tx_q.idx + i) % VHOST_NDESCS] = bufs_per_frame;
+
 		vqs[1].num_free -= bufs_per_frame;
 
 		// for each iov
 		for (j = 0; j < bufs_per_frame; ++j) {
 		    // aquire a descriptor from the tx queue (they have no address information)
-			struct vring_desc *desc = &vring_desc[1][vqs[1].vring_idx % VHOST_NDESCS];
+			struct vring_desc *desc = &vring_desc[1][vqs[1].last_used_idx % VHOST_NDESCS];
 			// access the iov for that fragment of the total eth frame by multiplying
 			// i (the index of the ethernet frame being processed) by how many iovs we have per frame
 			// and adding j (the index of the frame fragment being processed)
@@ -479,15 +509,18 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 			// set the next flag on the descriptor if this frame fragment is not the last one
 			// in the frame
 			desc->flags = (j == bufs_per_frame - 1) ? 0 : htole16(VRING_DESC_F_NEXT);
-			// advance the vring index by 1
-			vqs[1].vring_idx++;
+			// advance the last used descriptor index by 1 because we consumed 1 for this frame
+			// fragment
+			vqs[1].last_used_idx++;
 		}
 	}
 
 	smp_wmb();
-	vring_avail_1.avail.idx = htole16(le16toh(vring_avail_1.avail.idx) + nframes);
+	// increment the ring index by nframes. because we add entries to the ring nframes times
+	avail_tx_q.idx = htole16(le16toh(avail_tx_q.idx) + nframes);
+	vring_avail_all[1].avail = avail_tx_q;
 
-	vhost_kick(&vring_used_1.used, c->vq[1].kick_fd);
+	vhost_kick(&vring_used_all[1].used, c->vq[1].kick_fd);
 
 	return nframes;
 }
@@ -1621,9 +1654,9 @@ void tap_listen_handler(struct ctx *c, uint32_t events)
 	tap_start_connection(c);
 }
 
-static void *virtqueue_get_rx_buf(unsigned qid, unsigned *len)
+static void *virtqueue_get_rx_buf(unsigned *len)
 {
-	struct vring_used *used = !qid ? &vring_used_0.used : &vring_used_1.used;
+	struct vring_used *used = &vring_used_all[0].used;
 	uint32_t i;
 	uint16_t used_idx, last_used;
 
@@ -1670,9 +1703,9 @@ static void rx_pkt_refill(struct ctx *c)
 	// with the queue length on access)
 	// where is this vqs symbol even defined ?
 	// btw, vring_avail_0 and 1 are no longer things we have defined
-	vring_avail_0.avail.idx += vqs[0].num_free;
+	vring_avail_all[0].avail.idx += vqs[0].num_free;
 	vqs[0].num_free = 0;
-	vhost_kick(&vring_used_0.used, c->vq[0].kick_fd);
+	vhost_kick(&vring_used_all[0].used, c->vq[0].kick_fd);
 }
 
 void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *now)

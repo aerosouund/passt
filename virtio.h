@@ -11,11 +11,74 @@
 
 #include <stdbool.h>
 #include <linux/vhost_types.h>
+#include "passt.h"
 
 /* Maximum size of a virtqueue */
 #define VIRTQUEUE_MAX_SIZE 1024
 
 #define VNET_HLEN	(sizeof(struct virtio_net_hdr_mrg_rxbuf))
+
+#define VHOST_NDESCS (PKT_BUF_BYTES / 65520)
+// static_assert(!(VHOST_NDESCS & (VHOST_NDESCS - 1)),
+// 			 "Number of vhost descs must be a power of two by standard");
+
+
+#define VIRTQUEUE_MAX_SIZE 1024
+
+/* (ammar): where is this used ? */
+#define FRAGMENT_MSG_RATE	10  /* # seconds between fragment warnings */
+
+#define VHOST_VIRTIO         0xAF
+#define VHOST_GET_FEATURES   _IOR(VHOST_VIRTIO, 0x00, __u64)
+#define VHOST_SET_FEATURES   _IOW(VHOST_VIRTIO, 0x00, __u64)
+#define VHOST_SET_OWNER	     _IO(VHOST_VIRTIO, 0x01)
+#define VHOST_SET_MEM_TABLE  _IOW(VHOST_VIRTIO, 0x03, struct vhost_memory)
+#define VHOST_SET_VRING_NUM  _IOW(VHOST_VIRTIO, 0x10, struct vhost_vring_state)
+#define VHOST_SET_VRING_ADDR _IOW(VHOST_VIRTIO, 0x11, struct vhost_vring_addr)
+#define VHOST_SET_VRING_KICK _IOW(VHOST_VIRTIO, 0x20, struct vhost_vring_file)
+#define VHOST_SET_VRING_CALL _IOW(VHOST_VIRTIO, 0x21, struct vhost_vring_file)
+#define VHOST_SET_VRING_ERR  _IOW(VHOST_VIRTIO, 0x22, struct vhost_vring_file)
+#define VHOST_SET_BACKEND_FEATURES _IOW(VHOST_VIRTIO, 0x25, __u64)
+#define VHOST_NET_SET_BACKEND _IOW(VHOST_VIRTIO, 0x30, struct vhost_vring_file)
+
+// (ammar) why do we need here a struct to keep track of the free descriptors
+// then later add them to the available descriptors on the variable vring_avail_0
+static struct {
+	/* Number of free descriptors */
+	uint16_t num_free;
+
+	/* Last used idx processed */
+	uint16_t last_used_idx;
+} vqs[2];
+
+
+// don't use zero and one. use tx and rx from passt perspective
+static struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE)));
+union vring_avail_u {
+	struct vring_avail avail;
+	char buf[offsetof(struct vring_avail, ring[VHOST_NDESCS])];
+};
+static union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
+
+union vring_used_u {
+	struct vring_used used;
+	char buf[offsetof(struct vring_used, ring[VHOST_NDESCS])];
+};
+static union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
+
+
+// (ammar): is this thing even needed ? i will remove the memory sharing
+// for unneeded regions from below then go back to check if we can dismiss
+// this type completely
+#define N_VHOST_REGIONS 7
+union {
+	struct vhost_memory mem;
+	char buf[offsetof(struct vhost_memory, regions[N_VHOST_REGIONS])];
+} vhost_memory = {
+	.mem = {
+		.nregions = N_VHOST_REGIONS,
+	},
+};
 
 /**
  * struct vu_ring - Virtqueue rings
@@ -147,6 +210,34 @@ struct vu_virtq_element {
 	struct iovec *out_sg;
 };
 
+enum set_vring_err {
+	VRING_SETUP_OK = 0,
+	VRING_SETUP_ERR_SET_ADDR,
+	VRING_SETUP_ERR_SET_BACKEND,
+};
+
+enum vhost_setup_err {
+	VHOST_SETUP_OK = 0,
+	VHOST_SETUP_ERR_OPEN,
+	VHOST_SETUP_ERR_SET_OWNER,
+	VHOST_SETUP_ERR_GET_FEATURES,
+	VHOST_SETUP_ERR_MISSING_FEATURES,
+	VHOST_SETUP_ERR_SET_FEATURES,
+};
+
+enum eventfd_setup_err {
+	EVENTFD_SETUP_OK = 0,
+	EVENTFD_SETUP_ERR_CALL_FD,
+	EVENTFD_SETUP_ERR_SET_VRING_CALL,
+	EVENTFD_SETUP_ERR_EPOLL_ADD,
+	EVENTFD_SETUP_ERR_SET_VRING_NUM,
+	EVENTFD_SETUP_ERR_KICK_FD,
+	EVENTFD_SETUP_ERR_SET_VRING_KICK,
+	EVENTFD_SETUP_ERR_ERR_FD,
+	EVENTFD_SETUP_ERR_SET_ERR_FD,
+	EVENTFD_SETUP_ERR_ERR_EPOLL_ADD,
+};
+
 /**
  * has_feature() - Check a feature bit in a features set
  * @features:	Features set
@@ -199,4 +290,9 @@ void vu_queue_fill(const struct vu_dev *vdev, struct vu_virtq *vq,
 		   unsigned int idx);
 void vu_queue_flush(const struct vu_dev *vdev, struct vu_virtq *vq,
 		    unsigned int count);
+enum set_vring_err set_vring_for_queue(struct ctx *c, int queue_idx, int tap_fd);
+int setup_memory_table(struct ctx *c);
+enum vhost_setup_err setup_vhost_net(struct ctx *c);
+enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx);
+
 #endif /* VIRTIO_H */

@@ -257,6 +257,8 @@ struct ctx {
 	int fd_control;
 	int fd_repair_listen;
 	int fd_repair;
+
+	int vhost_fd;
 	/* TODO document all added fields */
 	int fd_vhost;
 	unsigned char our_tap_mac[ETH_ALEN];
