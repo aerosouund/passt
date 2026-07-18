@@ -85,7 +85,7 @@ static inline struct iovec iov_from_virtio_net_hdr(struct virtio_net_hdr *hdr)
  * tcp_sock_iov_init() - Initialise scatter-gather L2 buffers for IPv4 sockets
  * @c:		Execution context
  */
-void tcp_sock_iov_init(const struct ctx *c)
+void tcp_sock_iov_init()
 {
 	struct ipv6hdr ip6 = L2_BUF_IP6_INIT(IPPROTO_TCP);
 	struct iphdr iph = L2_BUF_IP4_INIT(IPPROTO_TCP);

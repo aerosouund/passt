@@ -2943,7 +2943,7 @@ int tcp_init(struct ctx *c)
 
 	tcp_get_rto_params(c);
 
-	tcp_sock_iov_init(c);
+	tcp_sock_iov_init();
 
 	memset(init_sock_pool4,		0xff,	sizeof(init_sock_pool4));
 	memset(init_sock_pool6,		0xff,	sizeof(init_sock_pool6));

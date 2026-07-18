@@ -970,12 +970,6 @@ int setup_memory_table(struct ctx *c) {
     }
 #define VHOST_MEMORY_REGION(elem) VHOST_MEMORY_REGION_PTR(&elem, sizeof(elem))
 
-    struct vhost_memory_region region = {
-        .guest_phys_addr = (uintptr_t)pkt_buf,
-		.memory_size = sizeof(pkt_buf) - 1,
-		.userspace_addr = (uintptr_t)pkt_buf,
-    };
-
     /* we are sharing this memory now yes, but does it get used
      * during setting used descriptors on the tx path ? */
     vhost_memory.mem.regions[0] = VHOST_MEMORY_REGION(pkt_buf);
