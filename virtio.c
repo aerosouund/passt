@@ -98,8 +98,12 @@
 struct vq_state vqs[2];
 
 struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE)));
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
 union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
+#pragma GCC diagnostic pop
 
 union vhost_memory_u vhost_memory = {
 	.mem = {
