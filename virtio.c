@@ -101,6 +101,12 @@ struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE))
 union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
 union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
 
+union vhost_memory_u vhost_memory = {
+	.mem = {
+		.nregions = N_VHOST_REGIONS,
+	},
+};
+
 /**
  * vu_gpa_to_va() - Translate guest physical address to our virtual address.
  * @dev:	Vhost-user device
@@ -1048,4 +1054,20 @@ enum set_vring_err set_vring_for_queue(struct ctx *c, int queue_idx, int tap_fd)
 		return VRING_SETUP_ERR_SET_BACKEND;
 
 	return VRING_SETUP_OK;
+}
+
+/* TODO this assumes the kernel consumes descriptors in order */
+void rx_pkt_refill(struct ctx *c)
+{
+	/* TODO: tune this threshold */
+	if (!vqs[0].num_free)
+		return;
+
+	// add to vring avail idx (which is a grow only counter that gets modded
+	// with the queue length on access)
+	// where is this vqs symbol even defined ?
+	// btw, vring_avail_0 and 1 are no longer things we have defined
+	vring_avail_all[0].avail.idx += vqs[0].num_free;
+	vqs[0].num_free = 0;
+	vhost_kick(&vring_used_all[0].used, c->vq[0].kick_fd);
 }

@@ -1693,21 +1693,6 @@ static void *virtqueue_get_rx_buf(unsigned *len)
 	return pkt_buf + i * (PKT_BUF_BYTES/VHOST_NDESCS);
 }
 
-/* TODO this assumes the kernel consumes descriptors in order */
-static void rx_pkt_refill(struct ctx *c)
-{
-	/* TODO: tune this threshold */
-	if (!vqs[0].num_free)
-		return;
-
-	// add to vring avail idx (which is a grow only counter that gets modded
-	// with the queue length on access)
-	// where is this vqs symbol even defined ?
-	// btw, vring_avail_0 and 1 are no longer things we have defined
-	vring_avail_all[0].avail.idx += vqs[0].num_free;
-	vqs[0].num_free = 0;
-	vhost_kick(&vring_used_all[0].used, c->vq[0].kick_fd);
-}
 
 void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *now)
 {

@@ -76,14 +76,11 @@ extern union vring_used_u vring_used_all[2];
 // for unneeded regions from below then go back to check if we can dismiss
 // this type completely
 #define N_VHOST_REGIONS 7
-union {
+union vhost_memory_u {
 	struct vhost_memory mem;
 	char buf[offsetof(struct vhost_memory, regions[N_VHOST_REGIONS])];
-} vhost_memory = {
-	.mem = {
-		.nregions = N_VHOST_REGIONS,
-	},
 };
+extern union vhost_memory_u vhost_memory;
 
 /**
  * struct vu_ring - Virtqueue rings
@@ -299,5 +296,6 @@ enum set_vring_err set_vring_for_queue(struct ctx *c, int queue_idx, int tap_fd)
 int setup_memory_table(struct ctx *c);
 enum vhost_setup_err setup_vhost_net(struct ctx *c);
 enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx);
+void rx_pkt_refill(struct ctx *c);
 
 #endif /* VIRTIO_H */
