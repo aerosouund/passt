@@ -39,6 +39,7 @@
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/if_ether.h>
+#include <sys/eventfd.h>
 
 #include <linux/if_tun.h>
 #include <linux/icmpv6.h>
@@ -1714,22 +1715,19 @@ void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *
 
 	tap_flush_pools();
 
-	while (true) {
-		struct virtio_net_hdr *hdr;
-		unsigned len;
+	struct virtio_net_hdr *hdr;
+	struct iov_tail data;
+	unsigned len;
 
-		hdr = virtqueue_get_rx_buf(ref.queue, &len);
-		if (!hdr)
-			break;
-
+	while ((hdr = virtqueue_get_rx_buf(&len))) {
 		if (len < sizeof(*hdr)) {
 			warn("vhost: invalid len %u", len);
 			continue;
 		}
-
-		// (ammar): the signature of this function has changed, we no longer pass a length
-		// and a pointer. we construct an iov tail before passing it to tap_add_packet
-		tap_add_packet(c, len - sizeof(*hdr), (void *)(hdr+1), now);
+		
+		/* skip over the vnet header, we wanna add the packet without it*/
+		data = IOV_TAIL_FROM_BUF((void *)(hdr+1), len - sizeof(*hdr), 0);
+		tap_add_packet(c, &data, now);
 	}
 
 	tap_handler(c, now);

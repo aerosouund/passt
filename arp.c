@@ -148,7 +148,7 @@ void arp_send_init_req(const struct ctx *c)
 	memcpy(req.am.tip,	&c->ip4.addr,		sizeof(req.am.tip));
 
 	debug("Sending initial ARP request for guest MAC address");
-	tap_send_single(c, &req, sizeof(req));
+	tap_send_single(c, &req, sizeof(req), false);
 }
 
 /**
@@ -202,5 +202,5 @@ void arp_announce(const struct ctx *c, struct in_addr *ip,
 	eth_ntop(mac, mac_str, sizeof(mac_str));
 	debug("ARP announcement for %s / %s", ip_str, mac_str);
 
-	tap_send_single(c, &msg, sizeof(msg));
+	tap_send_single(c, &msg, sizeof(msg), false);
 }

@@ -140,6 +140,8 @@ int do_clone(int (*fn)(void *), char *stack_area, size_t stack_size, int flags,
 #include <limits.h>
 #include <stdint.h>
 
+#define PASST_MAXDNAME 254 /* 253 (RFC 1035) + 1 (the terminator) */
+
 #include "epoll_type.h"
 #include "packet.h"
 
@@ -288,7 +290,6 @@ static inline int wrap_getsockname(int sockfd, struct sockaddr *addr,
 #define getsockname(s, addr, addrlen) \
 	wrap_getsockname((s), (addr), (addrlen))
 
-#define PASST_MAXDNAME 254 /* 253 (RFC 1035) + 1 (the terminator) */
 void encode_domain_name(char *buf, const char *domain_name);
 
 #endif /* UTIL_H */

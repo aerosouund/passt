@@ -87,12 +87,19 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <sys/eventfd.h>
 
 #include "util.h"
 #include "virtio.h"
 #include "vhost_user.h"
 #include "tcp_buf.h"
 #include "epoll_ctl.h"
+
+struct vq_state vqs[2];
+
+struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE)));
+union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
+union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
 
 /**
  * vu_gpa_to_va() - Translate guest physical address to our virtual address.
@@ -775,15 +782,6 @@ void vu_queue_flush(const struct vu_dev *vdev, struct vu_virtq *vq,
 		vq->signalled_used_valid = false;
 }
 
-enum vhost_setup_err {
-	VHOST_SETUP_OK = 0,
-	VHOST_SETUP_ERR_OPEN,
-	VHOST_SETUP_ERR_SET_OWNER,
-	VHOST_SETUP_ERR_GET_FEATURES,
-	VHOST_SETUP_ERR_MISSING_FEATURES,
-	VHOST_SETUP_ERR_SET_FEATURES,
-};
-
 /**
  * setup_vhost_net() - Open and negotiate features on /dev/vhost-net
  * @c:			Execution context; c->fd_vhost is set on success
@@ -972,12 +970,10 @@ int setup_memory_table(struct ctx *c) {
      * during setting used descriptors on the tx path ? */
     vhost_memory.mem.regions[0] = VHOST_MEMORY_REGION(pkt_buf);
    	vhost_memory.mem.regions[1] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
-	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp4_eth_src);
-	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp6_eth_src);
-	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp4_payload_ip);
-	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp6_payload_ip);
-	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(tcp_payload);
-	vhost_memory.mem.nregions = 7;
+	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp4_payload_ip);
+	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp6_payload_ip);
+	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp_payload);
+	vhost_memory.mem.nregions = 5;
 
 	return ioctl(c->vhost_fd, VHOST_SET_MEM_TABLE, &vhost_memory.mem);
 }

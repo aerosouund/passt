@@ -36,13 +36,14 @@
 /* Static buffers */
 
 /* Ethernet header for IPv4 and IPv6 frames */
+// i think this one should be shared with the kernel as well ?
 static struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
-struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+struct virtio_net_hdr tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 
 /* IP headers for IPv4 and IPv6 */
-static struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
-static struct ipv6hdr		tcp6_payload_ip[TCP_FRAMES_MEM];
+struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
+struct ipv6hdr		tcp6_payload_ip[TCP_FRAMES_MEM];
 
 /* TCP segments with payload for IPv4 and IPv6 frames */
 struct tcp_payload_t	tcp_payload[TCP_FRAMES_MEM];
@@ -147,12 +148,13 @@ static void tcp_revert_seq(const struct ctx *c, struct tcp_tap_conn **conns,
  * @c:		Execution context
  * @now:	Current timestamp
  */
+// AMMAR
 void tcp_payload_flush(const struct ctx *c, const struct timespec *now)
 {
 	size_t m;
 
 	m = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS,
-			    tcp_payload_used, false);
+			    tcp_payload_used, true);
 	if (m != tcp_payload_used) {
 		tcp_revert_seq(c, &tcp_frame_conns[m], &tcp_l2_iov[m],
 			       tcp_payload_used - m, now);

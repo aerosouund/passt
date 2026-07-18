@@ -10,13 +10,18 @@
 #define VIRTIO_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <linux/vhost_types.h>
-#include "passt.h"
+
+struct ctx;
 
 /* Maximum size of a virtqueue */
 #define VIRTQUEUE_MAX_SIZE 1024
 
 #define VNET_HLEN	(sizeof(struct virtio_net_hdr_mrg_rxbuf))
+
+/* Keep in sync with PKT_BUF_BYTES in passt.h */
+#define PKT_BUF_BYTES		(8UL << 20)
 
 #define VHOST_NDESCS (PKT_BUF_BYTES / 65520)
 // static_assert(!(VHOST_NDESCS & (VHOST_NDESCS - 1)),
@@ -43,7 +48,7 @@
 
 // (ammar) why do we need here a struct to keep track of the free descriptors
 // then later add them to the available descriptors on the variable vring_avail_0
-static struct {
+extern struct vq_state {
 	/* Number of free descriptors */
 	uint16_t num_free;
 
@@ -53,18 +58,18 @@ static struct {
 
 
 // don't use zero and one. use tx and rx from passt perspective
-static struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE)));
+extern struct vring_desc vring_desc[2][VHOST_NDESCS];
 union vring_avail_u {
 	struct vring_avail avail;
 	char buf[offsetof(struct vring_avail, ring[VHOST_NDESCS])];
 };
-static union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
+extern union vring_avail_u vring_avail_all[2];
 
 union vring_used_u {
 	struct vring_used used;
 	char buf[offsetof(struct vring_used, ring[VHOST_NDESCS])];
 };
-static union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
+extern union vring_used_u vring_used_all[2];
 
 
 // (ammar): is this thing even needed ? i will remove the memory sharing
