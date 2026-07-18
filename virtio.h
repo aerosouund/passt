@@ -297,5 +297,6 @@ int setup_memory_table(struct ctx *c);
 enum vhost_setup_err setup_vhost_net(struct ctx *c);
 enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx);
 void rx_pkt_refill(struct ctx *c);
+void vhost_kick(struct vring_used *used, int kick_fd);
 
 #endif /* VIRTIO_H */

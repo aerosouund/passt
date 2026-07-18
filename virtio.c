@@ -1071,3 +1071,15 @@ void rx_pkt_refill(struct ctx *c)
 	vqs[0].num_free = 0;
 	vhost_kick(&vring_used_all[0].used, c->vq[0].kick_fd);
 }
+
+void vhost_kick(struct vring_used *used, int kick_fd) {
+	/* We need to expose available array entries before checking avail
+	 * event.
+	 *
+	 * TODO: Does eventfd_write already do this?
+	 */
+	smp_mb();
+
+	if (!(used->flags & VRING_USED_F_NO_NOTIFY))
+		eventfd_write(kick_fd, 1);
+}

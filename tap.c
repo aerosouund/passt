@@ -415,18 +415,6 @@ void tap_icmp6_send(const struct ctx *c,
 	tap_send_single(c, buf, l4len + ((char *)icmp6h - buf), false);
 }
 
-static void vhost_kick(struct vring_used *used, int kick_fd) {
-	/* We need to expose available array entries before checking avail
-	 * event.
-	 *
-	 * TODO: Does eventfd_write already do this?
-	 */
-	smp_mb();
-
-	if (!(used->flags & VRING_USED_F_NO_NOTIFY))
-		eventfd_write(kick_fd, 1);
-}
-
 
 /**
  * tap_send_frames_vhost() - Send multiple frames to the pasta tap
