@@ -63,17 +63,13 @@ union vring_avail_u {
 	struct vring_avail avail;
 	char buf[offsetof(struct vring_avail, ring[VHOST_NDESCS])];
 };
+extern union vring_avail_u vring_avail_all[2];
 
 union vring_used_u {
 	struct vring_used used;
 	char buf[offsetof(struct vring_used, ring[VHOST_NDESCS])];
 };
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
-extern union vring_avail_u vring_avail_all[2];
 extern union vring_used_u vring_used_all[2];
-#pragma GCC diagnostic pop
 
 
 // (ammar): is this thing even needed ? i will remove the memory sharing

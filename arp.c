@@ -123,6 +123,9 @@ int arp(const struct ctx *c, struct iov_tail *data)
  */
 void arp_send_init_req(const struct ctx *c)
 {
+	// this request is from a random stack allocation.
+	// not a region that is shared with the kern
+	// what is the purpose of this entire func even ?
 	struct {
 		struct ethhdr eh;
 		struct arphdr ah;
@@ -131,7 +134,9 @@ void arp_send_init_req(const struct ctx *c)
 
 	/* Ethernet header */
 	req.eh.h_proto = htons(ETH_P_ARP);
+	// set the dest to mac broadcast (all gets it)
 	memcpy(req.eh.h_dest, MAC_BROADCAST, sizeof(req.eh.h_dest));
+	// the source is our tap mac
 	memcpy(req.eh.h_source, c->our_tap_mac, sizeof(req.eh.h_source));
 
 	/* ARP header */
@@ -142,9 +147,12 @@ void arp_send_init_req(const struct ctx *c)
 	req.ah.ar_pln = 4;
 
 	/* ARP message */
+	// the source hardware address is ours, the source ip is our tap addr
 	memcpy(req.am.sha,	c->our_tap_mac,		sizeof(req.am.sha));
 	memcpy(req.am.sip,	&c->ip4.our_tap_addr,	sizeof(req.am.sip));
+	// the target hardware addr is mac broadcast
 	memcpy(req.am.tha,	MAC_BROADCAST,		sizeof(req.am.tha));
+	// target ip is c-ip4 addr
 	memcpy(req.am.tip,	&c->ip4.addr,		sizeof(req.am.tip));
 
 	debug("Sending initial ARP request for guest MAC address");

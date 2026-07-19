@@ -947,6 +947,7 @@ enum eventfd_setup_err setup_eventfds(struct ctx *c, int queue_idx)
 		close(kick_file.fd);
 		return EVENTFD_SETUP_ERR_SET_VRING_KICK;
 	}
+	// does tap_vhost_input get triggered on a events on the kick fd ?
 	c->vq[queue_idx].kick_fd = kick_file.fd;
 
 	vqs[queue_idx].num_free = VHOST_NDESCS;

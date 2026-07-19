@@ -113,6 +113,7 @@ bool pool_can_fit(const struct pool *p, struct iov_tail *data)
  * @func:	For tracing: name of calling function
  * @line:	For tracing: caller line of function call
  */
+// i put it in a pool then do what ?
 void packet_add_do(struct pool *p, struct iov_tail *data,
 		   const char *func, int line)
 {

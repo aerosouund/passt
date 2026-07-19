@@ -245,7 +245,7 @@ static void passt_worker(void *opaque, int nfds, struct epoll_event *events)
 
 		switch (ref.type) {
 		case EPOLL_TYPE_TAP_PASTA:
-			tap_handler_pasta(c, eventmask, &now);
+			// tap_handler_pasta(c, eventmask, &now);
 			break;
 		case EPOLL_TYPE_TAP_PASST:
 			tap_handler_passt(c, eventmask, &now);

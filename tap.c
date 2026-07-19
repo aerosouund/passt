@@ -454,7 +454,9 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 				    size_t bufs_per_frame, size_t nframes)
 {
 	size_t i;
+	// of you think about it, i dont really need a local, i just need a macro
 	struct vring_avail avail_tx_q = vring_avail_all[1].avail;
+	#define AVAIL_Q(i)(vring_avail_all[i].avail)
 
 	// at this point, iov is an array of iovec with base and len
 	// bufs per frame is gonna be a constant that is passed by each protocol's caller
@@ -472,7 +474,7 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 		// write to the ring at the last writted index to it + i so we write to it a chain
 		// head per frame
-		avail_tx_q.ring[(avail_tx_q.idx + i) % VHOST_NDESCS] = htole16(vqs[1].last_used_idx) % VHOST_NDESCS;
+		AVAIL_Q(1).ring[(AVAIL_Q(1).idx + i) % VHOST_NDESCS] = htole16(vqs[1].last_used_idx) % VHOST_NDESCS;
 
 		/* the intent of the line below is to book keep that for this given descriptor index
 		denoted by avail_tx_q.idx + i mod the ndescs has allocated for itself bufs_per_frame 
@@ -506,8 +508,7 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 	smp_wmb();
 	// increment the ring index by nframes. because we add entries to the ring nframes times
-	avail_tx_q.idx = htole16(le16toh(avail_tx_q.idx) + nframes);
-	vring_avail_all[1].avail = avail_tx_q;
+	AVAIL_Q(1).idx = htole16(le16toh(AVAIL_Q(1).idx)+nframes);
 
 	vhost_kick(&vring_used_all[1].used, c->vq[1].kick_fd);
 
@@ -1682,6 +1683,8 @@ static void *virtqueue_get_rx_buf(unsigned *len)
 }
 
 
+// this function should be triggered when the guest has something to send to me
+// idk why it gets triggered when i am sending something
 void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *now)
 {
 	eventfd_read(ref.fd, (eventfd_t[]){ 0 });
