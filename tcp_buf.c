@@ -37,7 +37,7 @@
 
 /* Ethernet header for IPv4 and IPv6 frames */
 // i think this one should be shared with the kernel as well ?
-static struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
+struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
 struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 

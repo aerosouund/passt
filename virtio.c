@@ -978,7 +978,9 @@ int setup_memory_table(struct ctx *c) {
 	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp4_payload_ip);
 	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp6_payload_ip);
 	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp_payload);
-	vhost_memory.mem.nregions = 5;
+	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp_eth_hdr);
+	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(eth_pad);
+	vhost_memory.mem.nregions = 7;
 
 	return ioctl(c->fd_vhost, VHOST_SET_MEM_TABLE, &vhost_memory.mem);
 }
