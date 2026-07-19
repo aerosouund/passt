@@ -663,7 +663,7 @@ size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
 		      nframes - m, nframes);
 
 	pcap_multiple(iov, bufs_per_frame, m,
-	    c->mode == MODE_PASST ? sizeof(uint32_t) : sizeof(struct virtio_net_hdr));
+	    c->mode == MODE_PASST ? sizeof(uint32_t) : VNET_HLEN);
 
 	return m;
 }
@@ -1688,7 +1688,7 @@ void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *
 
 	tap_flush_pools();
 
-	struct virtio_net_hdr *hdr;
+	struct virtio_net_hdr_mrg_rxbuf *hdr;
 	struct iov_tail data;
 	unsigned len;
 

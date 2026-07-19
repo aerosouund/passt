@@ -22,7 +22,7 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 #define TCP_FRAMES							   \
 (c->mode == MODE_PASTA ? 1 : TCP_FRAMES_MEM)
 
-extern struct virtio_net_hdr tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+extern struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 extern struct tcp_payload_t	tcp_payload[TCP_FRAMES_MEM];
 
 extern struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];

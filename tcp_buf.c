@@ -39,7 +39,7 @@
 // i think this one should be shared with the kernel as well ?
 static struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
-struct virtio_net_hdr tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 
 /* IP headers for IPv4 and IPv6 */
 struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
@@ -73,7 +73,7 @@ void tcp_update_l2_buf(const unsigned char *eth_d)
 		eth_update_mac(&tcp_eth_hdr[i], eth_d, NULL);
 }
 
-static inline struct iovec iov_from_virtio_net_hdr(struct virtio_net_hdr *hdr)
+static inline struct iovec iov_from_virtio_net_hdr(struct virtio_net_hdr_mrg_rxbuf *hdr)
 {
     return (struct iovec){
             .iov_base = hdr,
