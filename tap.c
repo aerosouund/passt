@@ -1729,28 +1729,7 @@ static int tap_ns_tun(void *arg)
 	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
 	if (fd < 0)
 		die_perror("Failed to open() /dev/net/tun");
-
-	/* initialize the vhost-net dev file descriptor */
-	enum vhost_setup_err e = setup_vhost_net(c);
-	if (e != 0)
-	    die("vhost-net setup failed (%d)", e);
-
-	for (i = 0; i < ARRAY_SIZE(c->vq); i++) {
-	    enum eventfd_setup_err e = setup_eventfds(c, i);
-		if (e != 0)
-		    die("failed to setup event fds for queue %d: (%d)", i, e);
-	};
-
-	if (setup_memory_table(c) < 0)
-		die_perror("VHOST_SET_MEM_TABLE ioctl on /dev/vhost-net failed");
-
-	/* Duplicating foreach queue to follow the exact order from QEMU */
-	for (i = 0; i < ARRAY_SIZE(c->vq); i++) {
-	    enum set_vring_err ve = set_vring_for_queue(c, i, fd);
-	    if (ve != VRING_SETUP_OK)
-			die("vring setup failed for queue %d: (%d)", i, ve);
-	}
-
+		// we should just return the fd from this ns call setup
 	// (ammar): was this ifr always present ?
 	rc = ioctl(fd, (int)TUNSETIFF, &ifr);
 	if (rc < 0)
@@ -1774,6 +1753,27 @@ static void tap_sock_tun_init(struct ctx *c)
 		NS_CALL(tap_ns_tun, c);
 		if (c->fd_tap == -1)
 			die("Failed to set up tap device in namespace");
+	}
+
+	/* initialize the vhost-net dev file descriptor */
+	enum vhost_setup_err e = setup_vhost_net(c);
+	if (e != 0)
+	    die("vhost-net setup failed (%d)", e);
+
+	for (int i = 0; i < ARRAY_SIZE(c->vq); i++) {
+	    enum eventfd_setup_err e = setup_eventfds(c, i);
+		if (e != 0)
+		    die("failed to setup event fds for queue %d: (%d)", i, e);
+	};
+
+	if (setup_memory_table(c) < 0)
+		die_perror("VHOST_SET_MEM_TABLE ioctl on /dev/vhost-net failed");
+
+	/* Duplicating foreach queue to follow the exact order from QEMU */
+	for (int i = 0; i < ARRAY_SIZE(c->vq); i++) {
+	    enum set_vring_err ve = set_vring_for_queue(c, i, c->fd_tap);
+	    if (ve != VRING_SETUP_OK)
+			die("vring setup failed for queue %d: (%d)", i, ve);
 	}
 
 	pasta_ns_conf(c);
