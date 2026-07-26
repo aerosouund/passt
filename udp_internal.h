@@ -11,19 +11,6 @@
 
 #include "tap.h" /* needed by udp_meta_t */
 
-/**
- * struct udp_payload_t - UDP header and data for inbound messages
- * @uh:		UDP header
- * @data:	UDP data
- */
-struct udp_payload_t {
-	struct udphdr uh;
-	char data[USHRT_MAX - sizeof(struct udphdr)];
-#ifdef __AVX2__
-} __attribute__ ((packed, aligned(32)));
-#else
-} __attribute__ ((packed, aligned(__alignof__(unsigned int))));
-#endif
 
 size_t udp_update_hdr4(struct iphdr *ip4h, struct udphdr *uh,
 		       struct iov_tail *payload,

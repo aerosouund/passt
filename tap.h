@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "passt.h"
+#include "tap_hdr.h"
 
 /** L2_MAX_LEN_PASTA - Maximum frame length for pasta mode (with L2 header)
  *
@@ -37,14 +38,6 @@
 #define L2_MAX_LEN_VU		USHRT_MAX
 
 struct udphdr;
-
-/**
- * struct tap_hdr - tap backend specific headers
- * @vnet_len:	Frame length (for qemu socket transport)
- */
-struct tap_hdr {
-	uint32_t vnet_len;
-} __attribute__((packed));
 
 /**
  * tap_hdr_iov() - struct iovec for a tap header

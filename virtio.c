@@ -88,12 +88,14 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/eventfd.h>
+#include <netinet/in.h>
 
 #include "util.h"
 #include "virtio.h"
 #include "vhost_user.h"
 #include "tcp_buf.h"
 #include "epoll_ctl.h"
+#include "udp.h"
 
 struct vq_state vqs[2];
 
@@ -971,8 +973,6 @@ int setup_memory_table(struct ctx *c) {
     }
 #define VHOST_MEMORY_REGION(elem) VHOST_MEMORY_REGION_PTR(&elem, sizeof(elem))
 
-    /* we are sharing this memory now yes, but does it get used
-     * during setting used descriptors on the tx path ? */
     vhost_memory.mem.regions[0] = VHOST_MEMORY_REGION(pkt_buf);
    	vhost_memory.mem.regions[1] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
 	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp4_payload_ip);
@@ -980,7 +980,14 @@ int setup_memory_table(struct ctx *c) {
 	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp_payload);
 	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp_eth_hdr);
 	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(eth_pad);
-	vhost_memory.mem.nregions = 7;
+
+	/* udp specific buffers */
+	vhost_memory.mem.regions[7] = VHOST_MEMORY_REGION(udp_payload);
+	vhost_memory.mem.regions[8] = VHOST_MEMORY_REGION(udp_eth_hdr);
+	vhost_memory.mem.regions[9] = VHOST_MEMORY_REGION(udp_iov_recv);
+	vhost_memory.mem.regions[10] = VHOST_MEMORY_REGION(udp_mh_recv);
+	vhost_memory.mem.regions[11] = VHOST_MEMORY_REGION(udp_meta);
+	vhost_memory.mem.nregions = 12;
 
 	return ioctl(c->fd_vhost, VHOST_SET_MEM_TABLE, &vhost_memory.mem);
 }

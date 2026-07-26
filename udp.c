@@ -103,6 +103,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <linux/errqueue.h>
+#include <linux/virtio_net.h>
 
 #include "checksum.h"
 #include "util.h"
@@ -119,7 +120,6 @@
 #include "udp_vu.h"
 #include "epoll_ctl.h"
 
-#define UDP_MAX_FRAMES		32  /* max # of frames to receive at once */
 
 #define UDP_TIMEOUT	"/proc/sys/net/netfilter/nf_conntrack_udp_timeout"
 #define UDP_TIMEOUT_STREAM	\
@@ -133,30 +133,6 @@
 #define ICMP6_MAX_DLEN (IPV6_MIN_MTU			\
 			- sizeof(struct udphdr)	\
 			- sizeof(struct ipv6hdr))
-
-/* Static buffers */
-
-/* UDP header and data for inbound messages */
-static struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
-
-/* Ethernet headers for IPv4 and IPv6 frames */
-static struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
-
-/**
- * struct udp_meta_t - Pre-cooked headers for UDP packets
- * @ip6h:	Pre-filled IPv6 header (except for payload_len and addresses)
- * @ip4h:	Pre-filled IPv4 header (except for tot_len and saddr)
- * @taph:	Tap backend specific header
- */
-static struct udp_meta_t {
-	struct ipv6hdr ip6h;
-	struct iphdr ip4h;
-	struct tap_hdr taph;
-}
-#ifdef __AVX2__
-__attribute__ ((aligned(32)))
-#endif
-udp_meta[UDP_MAX_FRAMES];
 
 #define PKTINFO_SPACE					\
 	MAX(CMSG_SPACE(sizeof(struct in_pktinfo)),	\
@@ -186,9 +162,6 @@ enum udp_iov_idx {
 	UDP_NUM_IOVS,
 };
 
-/* IOVs and msghdr arrays for receiving datagrams from sockets */
-static struct iovec	udp_iov_recv		[UDP_MAX_FRAMES];
-static struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
 
 /* IOVs and msghdr arrays for sending "spliced" datagrams to sockets */
 static union sockaddr_inany udp_splice_to;
@@ -220,9 +193,9 @@ static void udp_iov_init_one(const struct ctx *c, size_t i)
 {
 	struct udp_payload_t *payload = &udp_payload[i];
 	struct msghdr *mh = &udp_mh_recv[i].msg_hdr;
-	struct udp_meta_t *meta = &udp_meta[i];
+	struct udp_meta_t *meta = &udp_meta[i]; // get an entry from the meta array
 	struct iovec *siov = &udp_iov_recv[i];
-	struct iovec *tiov = udp_l2_iov[i];
+	struct iovec *tiov = udp_l2_iov[i]; // a 5 element iov array
 
 	*meta = (struct udp_meta_t) {
 		.ip4h = L2_BUF_IP4_INIT(IPPROTO_UDP),
@@ -232,7 +205,19 @@ static void udp_iov_init_one(const struct ctx *c, size_t i)
 	*siov = IOV_OF_LVALUE(payload->data);
 
 	tiov[UDP_IOV_ETH] = IOV_OF_LVALUE(udp_eth_hdr[i]);
-	tiov[UDP_IOV_TAP] = tap_hdr_iov(c, &meta->taph);
+	// if the vhost tap fd is initialized, this is a sign for us that
+	// we will be using virtio transport. make the iov that is supposed
+	// to point to a tap header point instead to a virtio_net_mrg_rxbuf
+	if (c->fd_vhost != 0) {
+		struct iovec vnet_iov = {
+			.iov_base = (void *)(&meta->vnet_hdr),
+			.iov_len = sizeof(meta->vnet_hdr)
+		};
+		tiov[UDP_IOV_TAP] = vnet_iov;
+	} else {
+		tiov[UDP_IOV_TAP] = tap_hdr_iov(c, &meta->taph);
+	}
+
 	tiov[UDP_IOV_PAYLOAD].iov_base = payload;
 	tiov[UDP_IOV_ETH_PAD].iov_base = eth_pad;
 
@@ -365,14 +350,13 @@ static void udp_tap_prepare(const struct mmsghdr *mmh,
 			    const struct flowside *toside,
 			    bool no_udp_csum)
 {
-    // given a multimsghdr
-    // access the udp_l2_iov at index (the index of the received message)
-    // which the udp l2 iov looks like this [MAX_UDP_FRAMES][number of iovs in the frame]
-    // so a single entry looks like [iov{ base: ptr to tap hdr}, iov{}, iov{}.
-    // this function needs to be vhost aware, if vhost is requested, place the first iov
-    // as an iov with a pointer to a vnet header, not a tap header
-	struct iovec (*tap_iov)[UDP_NUM_IOVS] = &udp_l2_iov[idx];
-	struct udphdr *uh = (*tap_iov)[UDP_IOV_PAYLOAD].iov_base;
+	// udp_l2_iov is a multidimensional array. each element is a udp frame
+	// split up across several iovecs. access the particular frame at idx
+	// and save it in a variable called tap_iov of type array of iovec of len
+	// UDP_NUM_IOVS
+	struct iovec (*tap_iov)[UDP_NUM_IOVS] = &udp_l2_iov[idx]; 
+	struct udphdr *uh = (*tap_iov)[UDP_IOV_PAYLOAD].iov_base; // get the header in the tap_iov array at index 3
+	// get the payload into an iov_tail by accessing the header and offsetting by sizeof(*uh)
 	struct iov_tail payload = IOV_TAIL(&(*tap_iov)[UDP_IOV_PAYLOAD], 1,
 					   sizeof(*uh));
 	struct ethhdr *eh = (*tap_iov)[UDP_IOV_ETH].iov_base;
@@ -380,7 +364,10 @@ static void udp_tap_prepare(const struct mmsghdr *mmh,
 	size_t l4len, l2len;
 
 	l4len = sizeof(*uh) + mmh[idx].msg_len;
-	(*tap_iov)[UDP_IOV_PAYLOAD].iov_len = l4len;
+	(*tap_iov)[UDP_IOV_PAYLOAD].iov_len = l4len; // the iov len of the payload should be the entire layer 4 data
+	// which is the sum of the size of a header and the message length from mmh[idx].msg_len. (not sure where that
+	// value became known at)
+
 
 	eth_update_mac(eh, NULL, tap_omac);
 	if (!inany_v4(&toside->eaddr) || !inany_v4(&toside->oaddr)) {
@@ -857,7 +844,7 @@ static void udp_buf_sock_to_tap(const struct ctx *c, int s, int n,
 
 	// the l2 iov is gonna be prepared here, which is what we queue for sending.
 	// it gets passed as an iovec buffer
-	tap_send_frames(c, &udp_l2_iov[0][0], UDP_NUM_IOVS, n, false);
+	tap_send_frames(c, &udp_l2_iov[0][0], UDP_NUM_IOVS, n, true);
 }
 
 /**

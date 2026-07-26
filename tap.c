@@ -64,7 +64,6 @@
 #include "vu_common.h"
 #include "epoll_ctl.h"
 #include "virtio.h"
-// (ammar): there ws an include to tcp_buf here. is there anything we need from it ?
 
 /* Maximum allowed frame lengths (including L2 header) */
 

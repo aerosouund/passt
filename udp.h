@@ -8,8 +8,58 @@
 
 #include <stdint.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
 
+#include <linux/virtio_net.h>
+
+#include "tap_hdr.h"
 #include "fwd.h"
+
+/**
+ * struct udp_payload_t - UDP header and data for inbound messages
+ * @uh:		UDP header
+ * @data:	UDP data
+ */
+struct udp_payload_t {
+	struct udphdr uh;
+	char data[USHRT_MAX - sizeof(struct udphdr)];
+#ifdef __AVX2__
+} __attribute__ ((packed, aligned(32)));
+#else
+} __attribute__ ((packed, aligned(__alignof__(unsigned int))));
+#endif
+
+#define UDP_MAX_FRAMES		32  /* max # of frames to receive at once */
+/* UDP header and data for inbound messages */
+struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
+
+/* Ethernet headers for IPv4 and IPv6 frames */
+struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
+
+/* IOVs and msghdr arrays for receiving datagrams from sockets */
+struct iovec	udp_iov_recv		[UDP_MAX_FRAMES];
+struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
+
+/**
+ * struct udp_meta_t - Pre-cooked headers for UDP packets
+ * @ip6h:	Pre-filled IPv6 header (except for payload_len and addresses)
+ * @ip4h:	Pre-filled IPv4 header (except for tot_len and saddr)
+ * @taph:	Tap backend specific header
+ */
+struct udp_meta_t {
+	struct ipv6hdr ip6h;
+	struct iphdr ip4h;
+	// (ammar) maybe have this be a union to save up space ?
+	struct tap_hdr taph;
+	struct virtio_net_hdr_mrg_rxbuf vnet_hdr;
+};
+// (ammar): how to bring back this alignment if avx2 is defined ?
+#ifdef __AVX2__
+__attribute__ ((aligned(32)))
+#endif;
+
+struct udp_meta_t udp_meta[UDP_MAX_FRAMES];
+
 
 void udp_listen_sock_handler(const struct ctx *c, union epoll_ref ref,
 			     uint32_t events, const struct timespec *now);
