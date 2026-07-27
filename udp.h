@@ -56,7 +56,7 @@ struct udp_meta_t {
 // (ammar): how to bring back this alignment if avx2 is defined ?
 #ifdef __AVX2__
 __attribute__ ((aligned(32)))
-#endif;
+#endif
 
 extern struct udp_meta_t udp_meta[UDP_MAX_FRAMES];
 
