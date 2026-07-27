@@ -31,14 +31,14 @@ struct udp_payload_t {
 
 #define UDP_MAX_FRAMES		32  /* max # of frames to receive at once */
 /* UDP header and data for inbound messages */
-struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
+extern struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
 
 /* Ethernet headers for IPv4 and IPv6 frames */
-struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
+extern struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
 
 /* IOVs and msghdr arrays for receiving datagrams from sockets */
-struct iovec	udp_iov_recv		[UDP_MAX_FRAMES];
-struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
+extern struct iovec	udp_iov_recv		[UDP_MAX_FRAMES];
+extern struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
 
 /**
  * struct udp_meta_t - Pre-cooked headers for UDP packets
@@ -58,7 +58,7 @@ struct udp_meta_t {
 __attribute__ ((aligned(32)))
 #endif;
 
-struct udp_meta_t udp_meta[UDP_MAX_FRAMES];
+extern struct udp_meta_t udp_meta[UDP_MAX_FRAMES];
 
 
 void udp_listen_sock_handler(const struct ctx *c, union epoll_ref ref,
