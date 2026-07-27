@@ -1729,8 +1729,7 @@ static int tap_ns_tun(void *arg)
 	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
 	if (fd < 0)
 		die_perror("Failed to open() /dev/net/tun");
-		// we should just return the fd from this ns call setup
-	// (ammar): was this ifr always present ?
+
 	rc = ioctl(fd, (int)TUNSETIFF, &ifr);
 	if (rc < 0)
 		die_perror("TUNSETIFF ioctl on /dev/net/tun failed");
