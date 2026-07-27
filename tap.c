@@ -1719,7 +1719,6 @@ static int tap_ns_tun(void *arg)
 {
 	struct ctx *c = (struct ctx *)arg;
 	struct ifreq ifr = { .ifr_flags = IFF_TAP | IFF_NO_PI };
-	unsigned i;
 	int fd, rc;
 
 	c->fd_tap = -1;
