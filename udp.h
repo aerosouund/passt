@@ -49,9 +49,10 @@ extern struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
 struct udp_meta_t {
 	struct ipv6hdr ip6h;
 	struct iphdr ip4h;
-	// (ammar) maybe have this be a union to save up space ?
-	struct tap_hdr taph;
-	struct virtio_net_hdr_mrg_rxbuf vnet_hdr;
+	union {
+		struct tap_hdr taph;
+		struct virtio_net_hdr_mrg_rxbuf vnet_hdr;
+	};
 };
 // (ammar): how to bring back this alignment if avx2 is defined ?
 #ifdef __AVX2__
