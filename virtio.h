@@ -77,11 +77,7 @@ union vring_used_u {
 extern union vring_used_u vring_used_all[2];
 #pragma GCC diagnostic pop
 
-
-// (ammar): is this thing even needed ? i will remove the memory sharing
-// for unneeded regions from below then go back to check if we can dismiss
-// this type completely
-#define N_VHOST_REGIONS 7
+#define N_VHOST_REGIONS 12
 union vhost_memory_u {
 	struct vhost_memory mem;
 	char buf[offsetof(struct vhost_memory, regions[N_VHOST_REGIONS])];

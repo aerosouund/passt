@@ -973,13 +973,16 @@ int setup_memory_table(struct ctx *c) {
     }
 #define VHOST_MEMORY_REGION(elem) VHOST_MEMORY_REGION_PTR(&elem, sizeof(elem))
 
+	/* general purpose buffers */
     vhost_memory.mem.regions[0] = VHOST_MEMORY_REGION(pkt_buf);
-   	vhost_memory.mem.regions[1] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
-	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp4_payload_ip);
-	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp6_payload_ip);
-	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp_payload);
-	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp_eth_hdr);
-	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(eth_pad);
+	vhost_memory.mem.regions[1] = VHOST_MEMORY_REGION(eth_pad);
+
+	/* tcp specific buffers */
+   	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
+	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp4_payload_ip);
+	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp6_payload_ip);
+	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp_payload);
+	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(tcp_eth_hdr);
 
 	/* udp specific buffers */
 	vhost_memory.mem.regions[7] = VHOST_MEMORY_REGION(udp_payload);

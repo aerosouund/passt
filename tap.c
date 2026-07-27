@@ -453,8 +453,6 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 				    size_t bufs_per_frame, size_t nframes)
 {
 	size_t i;
-	// of you think about it, i dont really need a local, i just need a macro
-	struct vring_avail avail_tx_q = vring_avail_all[1].avail;
 	#define AVAIL_Q(i)(vring_avail_all[i].avail)
 
 	// at this point, iov is an array of iovec with base and len
