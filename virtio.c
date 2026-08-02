@@ -72,19 +72,47 @@
  * SUCH DAMAGE.
  */
 
+#include "passt.h"
 #include <assert.h>
+#include <limits.h>
 #include <stddef.h>
 #include <endian.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <limits.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <sys/eventfd.h>
+#include <netinet/in.h>
 
 #include "util.h"
 #include "virtio.h"
 #include "vhost_user.h"
+#include "tcp_buf.h"
+#include "epoll_ctl.h"
+#include "udp.h"
 
-#define VIRTQUEUE_MAX_SIZE 1024
+
+struct vq_state vqs[2];
+
+struct vring_desc vring_desc[2][VHOST_NDESCS] __attribute__((aligned(PAGE_SIZE)));
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+union vring_avail_u vring_avail_all[2] __attribute__((aligned(PAGE_SIZE)));
+union vring_used_u vring_used_all[2] __attribute__((aligned(PAGE_SIZE)));
+#pragma GCC diagnostic pop
+
+union vhost_memory_u vhost_memory = {
+	.mem = {
+		.nregions = N_VHOST_REGIONS,
+	},
+};
 
 /**
  * vu_gpa_to_va() - Translate guest physical address to our virtual address.
@@ -765,4 +793,257 @@ void vu_queue_flush(const struct vu_dev *vdev, struct vu_virtq *vq,
 	vq->inuse -= count;
 	if ((uint16_t)(new - vq->signalled_used) < (uint16_t)(new - old))
 		vq->signalled_used_valid = false;
+}
+
+/**
+ * setup_vhost_net() - Open and negotiate features on /dev/vhost-net
+ * @c:			Execution context; c->fd_vhost is set on success
+ *
+ */
+void setup_vhost_net(struct ctx *c)
+{
+	static const uint64_t req_features =
+		(1ULL << VIRTIO_F_VERSION_1) | (1ULL << VHOST_NET_F_VIRTIO_NET_HDR);
+	int vhost_fd, rc;
+
+	vhost_fd = open("/dev/vhost-net", O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	if (vhost_fd < 0)
+		die_perror("Failed to open /dev/vhost-net");
+
+	rc = ioctl(vhost_fd, VHOST_SET_OWNER, NULL);
+	if (rc < 0)
+		die_perror("VHOST_SET_OWNER ioctl on /dev/vhost-net failed");
+
+	rc = ioctl(vhost_fd, VHOST_GET_FEATURES, &c->virtio_features);
+	if (rc < 0)
+		die_perror("VHOST_GET_FEATURES ioctl on /dev/vhost-net failed");
+
+	debug("vhost features: %lx", c->virtio_features);
+	debug("req features: %lx", req_features);
+
+	c->virtio_features &= req_features;
+	if (c->virtio_features != req_features)
+		die("vhost does not support required features");
+
+	rc = ioctl(vhost_fd, VHOST_SET_FEATURES, &c->virtio_features);
+	if (rc < 0)
+		die_perror("VHOST_SET_FEATURES ioctl on /dev/vhost-net failed");
+
+	c->fd_vhost = vhost_fd;
+}
+
+/**
+ * setup_eventfds() - Set up call/kick eventfds and vring size for one queue
+ * @c:		Execution context; c->fd_vhost must already be set
+ * @queue_idx:	Index of the queue (vring) to configure
+ *
+ */
+void setup_eventfds(struct ctx *c, int queue_idx)
+{
+	int vhost_fd = c->fd_vhost;
+	struct vhost_vring_file call_file = { .index = queue_idx };
+	struct vhost_vring_file kick_file = { .index = queue_idx };
+	struct vhost_vring_file err_file = { .index = queue_idx };
+
+	struct vhost_vring_state state = {
+		.index = queue_idx,
+		.num = VHOST_NDESCS,
+	};
+	union epoll_ref ref = {
+		.type = EPOLL_TYPE_VHOST_CALL,
+		.queue = queue_idx,
+	};
+	struct epoll_event ev;
+	int rc;
+
+	call_file.fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (call_file.fd < 0)
+		die_perror("Failed to create call eventfd");
+	ref.fd = call_file.fd;
+
+	rc = ioctl(vhost_fd, VHOST_SET_VRING_CALL, &call_file);
+	if (rc < 0)
+		die_perror("VHOST_SET_VRING_CALL ioctl on /dev/vhost-net failed");
+
+	ev = (struct epoll_event){ .data.u64 = ref.u64, .events = EPOLLIN };
+	rc = epoll_ctl(c->epollfd, EPOLL_CTL_ADD, ref.fd, &ev);
+	if (rc < 0)
+		die_perror("Failed to add call eventfd to epoll");
+	c->vq[queue_idx].call_fd = call_file.fd;
+
+	err_file.fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (err_file.fd < 0)
+		die_perror("Failed to create error eventfd");
+
+	rc = ioctl(vhost_fd, VHOST_SET_VRING_ERR, &err_file);
+	if (rc < 0)
+		die_perror("VHOST_SET_VRING_ERR ioctl on /dev/vhost-net failed");
+
+	ref.type = EPOLL_TYPE_VHOST_ERROR;
+	ref.fd = err_file.fd;
+	ev.data.u64 = ref.u64;
+	rc = epoll_ctl(c->epollfd, EPOLL_CTL_ADD, ref.fd, &ev);
+	if (rc < 0)
+		die_perror("Failed to add error eventfd to epoll");
+	c->vq[queue_idx].err_fd = err_file.fd;
+
+	rc = ioctl(vhost_fd, VHOST_SET_VRING_NUM, &state);
+	if (rc < 0) {
+		die_perror("VHOST_SET_VRING_NUM ioctl on /dev/vhost-net failed (queue %d)",
+			    queue_idx);
+	}
+
+	kick_file.fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (kick_file.fd < 0)
+		die_perror("Failed to create kick eventfd");
+
+	rc = ioctl(vhost_fd, VHOST_SET_VRING_KICK, &kick_file);
+	if (rc < 0) {
+		die_perror("VHOST_SET_VRING_KICK ioctl on /dev/vhost-net failed (queue %d)",
+			    queue_idx);
+	}
+
+	c->vq[queue_idx].kick_fd = kick_file.fd;
+
+	vqs[queue_idx].num_free = VHOST_NDESCS;
+}
+
+/**
+ * setup_memory_table() - Register the GPA/HVA translation table
+ * @c:		Execution context; c->fd_vhost must already be set
+ *
+ * pasta has no real guest, so container->host addresses are 1:1 and can
+ * be interpreted directly rather than translated.
+ */
+int setup_memory_table(struct ctx *c) {
+#define VHOST_MEMORY_REGION_PTR(addr, size) \
+    (struct vhost_memory_region) { \
+        .guest_phys_addr = (uintptr_t)addr, \
+        .memory_size = size, \
+        .userspace_addr  = (uintptr_t)addr, \
+    }
+#define VHOST_MEMORY_REGION(elem) VHOST_MEMORY_REGION_PTR(&elem, sizeof(elem))
+
+	/* general purpose buffers */
+    vhost_memory.mem.regions[0] = VHOST_MEMORY_REGION(pkt_buf);
+	vhost_memory.mem.regions[1] = VHOST_MEMORY_REGION(eth_pad);
+
+	/* tcp specific buffers */
+   	vhost_memory.mem.regions[2] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
+	vhost_memory.mem.regions[3] = VHOST_MEMORY_REGION(tcp4_payload_ip);
+	vhost_memory.mem.regions[4] = VHOST_MEMORY_REGION(tcp6_payload_ip);
+	vhost_memory.mem.regions[5] = VHOST_MEMORY_REGION(tcp_payload);
+	vhost_memory.mem.regions[6] = VHOST_MEMORY_REGION(tcp_eth_hdr);
+
+	/* udp specific buffers */
+	vhost_memory.mem.regions[7] = VHOST_MEMORY_REGION(udp_payload);
+	vhost_memory.mem.regions[8] = VHOST_MEMORY_REGION(udp_eth_hdr);
+	vhost_memory.mem.regions[9] = VHOST_MEMORY_REGION(udp_iov_recv);
+	vhost_memory.mem.regions[10] = VHOST_MEMORY_REGION(udp_mh_recv);
+	vhost_memory.mem.regions[11] = VHOST_MEMORY_REGION(udp_meta);
+	vhost_memory.mem.nregions = 12;
+
+	return ioctl(c->fd_vhost, VHOST_SET_MEM_TABLE, &vhost_memory.mem);
+}
+
+
+
+/**
+ * set_vring_for_queue() - Register a vring's addresses and bind its backend
+ * @c:		Execution context; c->fd_vhost must already be set
+ * @queue_idx:	Index of the queue (vring) to configure
+ * @tap_fd:	Tap fd to bind as this queue's backend
+ *
+ */
+void set_vring_for_queue(struct ctx *c, int queue_idx, int tap_fd)
+{
+	int vhost_fd = c->fd_vhost;
+	struct vhost_vring_addr addr = {
+		.index = queue_idx,
+		.desc_user_addr = (unsigned long)vring_desc[queue_idx],
+		.avail_user_addr = (unsigned long)&vring_avail_all[queue_idx],
+		.used_user_addr = (unsigned long)&vring_used_all[queue_idx],
+		.log_guest_addr = (unsigned long)&vring_used_all[queue_idx],
+	};
+	struct vhost_vring_file file = {
+		.index = queue_idx,
+		.fd = tap_fd,
+	};
+	unsigned int i;
+	int rc;
+
+	debug("qid: %d", queue_idx);
+	debug("vhost desc addr: 0x%llx", addr.desc_user_addr);
+	debug("vhost avail addr: 0x%llx", addr.avail_user_addr);
+	debug("vhost used addr: 0x%llx", addr.used_user_addr);
+
+	rc = ioctl(vhost_fd, VHOST_SET_VRING_ADDR, &addr);
+	if (rc < 0)
+		die_perror("VHOST_SET_VRING_ADDR ioctl on /dev/vhost-net failed");
+
+	if (queue_idx == 0) {
+		for (i = 0; i < VHOST_NDESCS; ++i) {
+			vring_desc[0][i].addr = (uintptr_t)pkt_buf +
+				i * (PKT_BUF_BYTES / VHOST_NDESCS);
+			vring_desc[0][i].len = PKT_BUF_BYTES / VHOST_NDESCS;
+			vring_desc[0][i].flags = VRING_DESC_F_WRITE;
+		}
+
+		for (i = 0; i < VHOST_NDESCS; ++i)
+			vring_avail_all[0].avail.ring[i] = htole16(i);
+
+		rx_descriptor_handoff(c);
+	}
+
+	if (queue_idx == 1) {
+		for (i = 0; i < (VHOST_NDESCS - 1); ++i) {
+			vring_desc[1][i].next = i+1;
+		}
+	}
+
+	debug("qid: %d", file.index);
+	debug("tap fd: %d", file.fd);
+	rc = ioctl(vhost_fd, VHOST_NET_SET_BACKEND, &file);
+	if (rc < 0)
+		die_perror("VHOST_NET_SET_BACKEND ioctl on /dev/vhost-net failed");
+}
+
+/**
+ * rx_descriptor_handoff() - Batch-announce freed RX descriptors to the kernel
+ * @c:		Execution context
+ *
+ * Bumps avail.idx by the number of descriptors accumulated in
+ * vqs[0].num_free (from prior consume_one_rx_descriptor() calls),
+ * then resets the counter to zero. The kernel will see the new
+ * avail.idx and consume the freshly-available descriptors.
+ *
+ */
+void rx_descriptor_handoff(struct ctx *c)
+{
+	smp_wmb();
+
+	if (!vqs[0].num_free)
+		return;
+
+	vring_avail_all[0].avail.idx += vqs[0].num_free;
+	vqs[0].num_free = 0;
+	vhost_kick(&vring_used_all[0].used, c->vq[0].kick_fd);
+}
+
+
+/**
+ * vhost_kick() - Notify the kernel that new descriptors are available
+ * @used:		The vring_used queue. Taken as a parameter to check if the kernel
+ * 				virtio thread is actively reading descriptors or no
+ * @kick_fd:	Which fd to notify about (will differ by which queue we are about
+ * 				to announce availability in) 
+ */
+void vhost_kick(struct vring_used *used, int kick_fd) {
+	/* Ensure that the read to used->flags doesn't get reordered to be
+	* above the avail.idx update 
+	*/
+	smp_mb();
+
+	if (!(used->flags & VRING_USED_F_NO_NOTIFY))
+		eventfd_write(kick_fd, 1);
 }
