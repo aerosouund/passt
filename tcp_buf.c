@@ -33,23 +33,19 @@
 #include "tcp_internal.h"
 #include "tcp_buf.h"
 
-#define TCP_FRAMES_MEM			128
-#define TCP_FRAMES							   \
-	(c->mode == MODE_PASTA ? 1 : TCP_FRAMES_MEM)
-
 /* Static buffers */
 
 /* Ethernet header for IPv4 and IPv6 frames */
-static struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
+struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
-static struct tap_hdr		tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+struct tap_hdr tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 
 /* IP headers for IPv4 and IPv6 */
-static struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
-static struct ipv6hdr		tcp6_payload_ip[TCP_FRAMES_MEM];
+struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
+struct ipv6hdr		tcp6_payload_ip[TCP_FRAMES_MEM];
 
 /* TCP segments with payload for IPv4 and IPv6 frames */
-static struct tcp_payload_t	tcp_payload[TCP_FRAMES_MEM];
+struct tcp_payload_t	tcp_payload[TCP_FRAMES_MEM];
 
 static_assert(MSS4 <= sizeof(tcp_payload[0].data), "MSS4 is greater than 65516");
 static_assert(MSS6 <= sizeof(tcp_payload[0].data), "MSS6 is greater than 65516");

@@ -119,7 +119,6 @@
 #include "udp_vu.h"
 #include "epoll_ctl.h"
 
-#define UDP_MAX_FRAMES		32  /* max # of frames to receive at once */
 
 #define UDP_TIMEOUT	"/proc/sys/net/netfilter/nf_conntrack_udp_timeout"
 #define UDP_TIMEOUT_STREAM	\
@@ -133,30 +132,6 @@
 #define ICMP6_MAX_DLEN (IPV6_MIN_MTU			\
 			- sizeof(struct udphdr)	\
 			- sizeof(struct ipv6hdr))
-
-/* Static buffers */
-
-/* UDP header and data for inbound messages */
-static struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
-
-/* Ethernet headers for IPv4 and IPv6 frames */
-static struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
-
-/**
- * struct udp_meta_t - Pre-cooked headers for UDP packets
- * @ip6h:	Pre-filled IPv6 header (except for payload_len and addresses)
- * @ip4h:	Pre-filled IPv4 header (except for tot_len and saddr)
- * @taph:	Tap backend specific header
- */
-static struct udp_meta_t {
-	struct ipv6hdr ip6h;
-	struct iphdr ip4h;
-	struct tap_hdr taph;
-}
-#ifdef __AVX2__
-__attribute__ ((aligned(32)))
-#endif
-udp_meta[UDP_MAX_FRAMES];
 
 #define PKTINFO_SPACE					\
 	MAX(CMSG_SPACE(sizeof(struct in_pktinfo)),	\
@@ -186,9 +161,6 @@ enum udp_iov_idx {
 	UDP_NUM_IOVS,
 };
 
-/* IOVs and msghdr arrays for receiving datagrams from sockets */
-static struct iovec	udp_iov_recv		[UDP_MAX_FRAMES];
-static struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
 
 /* IOVs and msghdr arrays for sending "spliced" datagrams to sockets */
 static union sockaddr_inany udp_splice_to;
@@ -198,6 +170,18 @@ static struct mmsghdr	udp_mh_splice		[UDP_MAX_FRAMES];
 
 /* IOVs for L2 frames */
 static struct iovec	udp_l2_iov		[UDP_MAX_FRAMES][UDP_NUM_IOVS];
+
+struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
+
+/* Ethernet headers for IPv4 and IPv6 frames */
+struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
+
+/* IOVs and msghdr arrays for receiving datagrams from sockets */
+struct iovec  udp_iov_recv            [UDP_MAX_FRAMES];
+struct mmsghdr        udp_mh_recv             [UDP_MAX_FRAMES];
+
+/* Pre-cooked headers for UDP packets */
+struct udp_meta_t udp_meta[UDP_MAX_FRAMES];
 
 /**
  * udp_update_l2_buf() - Update L2 buffers with Ethernet and IPv4 addresses
