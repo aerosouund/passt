@@ -66,6 +66,7 @@ static inline void tap_hdr_update(struct tap_hdr *thdr, size_t l2len)
 	thdr->vnet_len = htonl(l2len);
 }
 
+void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *now);
 unsigned long tap_l2_max_len(const struct ctx *c);
 void *tap_push_l2h(const struct ctx *c, void *buf,
 		   const void *src_mac, uint16_t proto);

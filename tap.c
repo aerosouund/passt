@@ -13,6 +13,7 @@
  *
  */
 
+#include "common.h"
 #include <sched.h>
 #include <unistd.h>
 #include <signal.h>
@@ -38,6 +39,7 @@
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/if_ether.h>
+#include <sys/eventfd.h>
 
 #include <linux/if_tun.h>
 #include <linux/icmpv6.h>
@@ -61,6 +63,7 @@
 #include "vhost_user.h"
 #include "vu_common.h"
 #include "epoll_ctl.h"
+#include "virtio.h"
 
 /* Maximum allowed frame lengths (including L2 header) */
 
@@ -1359,7 +1362,8 @@ void tap_handler_pasta(struct ctx *c, uint32_t events,
 	if (events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
 		die("Disconnect event on /dev/net/tun device, exiting");
 
-	if (events & EPOLLIN)
+	/* don't proceed with the normal tap processing in case vhost acceleration was required */
+	if (events & EPOLLIN && !c->vhost)
 		tap_pasta_input(c, now);
 }
 
@@ -1515,6 +1519,90 @@ void tap_listen_handler(struct ctx *c, uint32_t events)
 }
 
 /**
+ * consume_one_rx_descriptor() - Consume one used RX descriptor from the kernel
+ * @len:	Set to the length of data written by the kernel
+ *
+ * Pops a single entry from the used ring. Advances vqs[0].last_used_idx
+ * (the number of entries we have consumed) and vqs[0].num_free (the count
+ * of descriptors awaiting refill announcement).
+ * 
+ * NOTE: This function assumes the kernel is going to post single descriptors
+ * always, No chains. If that changes, we would need to increment num_free
+ * as we advertise back to the kernel the free descriptors by the length of the chain.
+ *
+ * Return: pointer to the packet buffer, or NULL if no data is available
+ */
+static void *consume_one_rx_descriptor(unsigned *len)
+{
+	struct vring_used *used = &vring_used_all[0].used;
+	uint32_t i;
+	uint16_t used_idx, last_used;
+
+	used_idx = le16toh(used->idx);
+
+	smp_rmb();
+
+	/* if the kernel's last_used index matches our last_used_idx, then
+	* we have finished consuming data.
+	*/
+	if (used_idx == vqs[0].last_used_idx) {
+		*len = 0;
+		return NULL;
+	}
+
+	/* read the last index we consumed */
+	last_used = vqs[0].last_used_idx % VHOST_NDESCS;
+	/* read the index of what the */
+	i = le32toh(used->ring[last_used].id);
+	*len = le32toh(used->ring[last_used].len);
+
+	if (i != last_used) {
+		die("vhost: id %u at used position %u != %u", i, last_used, i);
+	}
+
+	/* the kernel has queued for us something we cannot receive */
+	if (*len > PKT_BUF_BYTES/VHOST_NDESCS) {
+		die("vhost: id %d len %u > %zu", i, *len, PKT_BUF_BYTES/VHOST_NDESCS);
+	}
+
+	vqs[0].last_used_idx++;
+	vqs[0].num_free++;
+	return pkt_buf + i * (PKT_BUF_BYTES/VHOST_NDESCS);
+}
+
+
+/**
+ * tap_vhost_input() - Handler for new data on the tun socket to hypervisor vq
+ * @c:		Execution context
+ * @ref:	epoll reference
+ * @now:	Current timestamp
+ */
+void tap_vhost_input(struct ctx *c, union epoll_ref ref, const struct timespec *now)
+{
+	eventfd_read(ref.fd, (eventfd_t[]){ 0 });
+
+	tap_flush_pools();
+
+	struct virtio_net_hdr_mrg_rxbuf *hdr;
+	struct iov_tail data;
+	unsigned len;
+
+	while ((hdr = consume_one_rx_descriptor(&len))) {
+		if (len < sizeof(*hdr)) {
+			warn("vhost: invalid len %u", len);
+			continue;
+		}
+		
+		/* skip over the vnet header, we wanna add the packet without it*/
+		data = IOV_TAIL_FROM_BUF((void *)(hdr+1), len - sizeof(*hdr), 0);
+		tap_add_packet(c, &data, now);
+	}
+
+	tap_handler(c, now);
+	rx_descriptor_handoff(c);
+}
+
+/**
  * tap_ns_tun() - Get tuntap fd in namespace
  * @c:		Execution context
  *
@@ -1524,16 +1612,15 @@ void tap_listen_handler(struct ctx *c, uint32_t events)
  */
 static int tap_ns_tun(void *arg)
 {
-	struct ifreq ifr = { .ifr_flags = IFF_TAP | IFF_NO_PI };
-	int flags = O_RDWR | O_NONBLOCK | O_CLOEXEC;
 	struct ctx *c = (struct ctx *)arg;
+	struct ifreq ifr = { .ifr_flags = IFF_TAP | IFF_NO_PI };
 	int fd, rc;
 
 	c->fd_tap = -1;
 	memcpy(ifr.ifr_name, c->pasta_ifn, IFNAMSIZ);
 	ns_enter(c);
 
-	fd = open("/dev/net/tun", flags);
+	fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK | O_CLOEXEC);
 	if (fd < 0)
 		die_perror("Failed to open() /dev/net/tun");
 
@@ -1559,6 +1646,20 @@ static void tap_sock_tun_init(struct ctx *c)
 		NS_CALL(tap_ns_tun, c);
 		if (c->fd_tap == -1)
 			die("Failed to set up tap device in namespace");
+	}
+
+	/* initialize the vhost-net dev file descriptor */
+	if (c->vhost) {
+		setup_vhost_net(c);
+
+		for (int i = 0; i < ARRAY_SIZE(c->vq); i++)
+			setup_eventfds(c, i);
+
+		if (setup_memory_table(c) < 0)
+			die_perror("VHOST_SET_MEM_TABLE ioctl on /dev/vhost-net failed");
+
+		for (int i = 0; i < ARRAY_SIZE(c->vq); i++)
+			set_vring_for_queue(c, i, c->fd_tap);
 	}
 
 	pasta_ns_conf(c);
