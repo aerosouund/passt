@@ -36,7 +36,7 @@ union epoll_ref;
 	((uint8_t [ETH_ALEN]){0x9a, 0x55, 0x9a, 0x55, 0x9a, 0x55})
 
 /* Large enough for ~128 maximum size frames */
-#define PKT_BUF_BYTES		(8UL << 20)
+#define PKT_BUF_BYTES		((8UL << 20) + 1536)	/* 128 * sizeof(virtio_net_hdr_mrg_rxbuf) */
 
 extern char pkt_buf		[PKT_BUF_BYTES];
 
