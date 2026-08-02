@@ -736,6 +736,7 @@ pasta_opts:
 		"    default: auto\n"
 		"  --host-lo-to-ns-lo	Translate host-loopback forwards to\n"
 		"			namespace loopback\n"
+		"  --vhost\t\tUse vhost-kernel acceleration\n"
 		"  --userns NSPATH 	Target user namespace to join\n"
 		"  --netns PATH|NAME	Target network namespace to join\n"
 		"  --netns-only		Don't join existing user namespace\n"
@@ -766,6 +767,7 @@ enum passt_modes conf_mode(int argc, char *argv[])
 	int vhost_user = 0;
 	const struct option optvu[] = {
 		{"vhost-user",	no_argument,		&vhost_user,	1 },
+		{"vhost",	no_argument,		NULL,		0 },
 		{ 0 },
 	};
 	char argv0[PATH_MAX], *basearg0;
@@ -1309,6 +1311,7 @@ void conf(struct ctx *c, int argc, char **argv)
 		{"ipv4-only",	no_argument,		NULL,		'4' },
 		{"ipv6-only",	no_argument,		NULL,		'6' },
 		{"one-off",	no_argument,		NULL,		'1' },
+		{"vhost",	no_argument,		&c->vhost,	1 },
 		{"tcp-ports",	required_argument,	NULL,		't' },
 		{"udp-ports",	required_argument,	NULL,		'u' },
 		{"tcp-ns",	required_argument,	NULL,		'T' },
@@ -1837,6 +1840,9 @@ void conf(struct ctx *c, int argc, char **argv)
 		if (copy_addrs_opt)
 			die("--no-copy-addrs needs --config-net");
 	}
+
+	if (c->vhost && c->mode != MODE_PASTA)
+		die("--vhost is only available in pasta mode");
 
 	if (c->mode == MODE_PASTA && c->splice_only) {
 		if (c->no_splice)

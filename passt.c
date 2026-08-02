@@ -65,6 +65,7 @@ char pkt_buf[PKT_BUF_BYTES]	__attribute__ ((aligned(PAGE_SIZE)));
 struct ctx passt_ctx = {
 	.pidfile_fd		= -1,
 	.fd_tap			= -1,
+	.fd_vhost 		= -1,
 	.fd_tap_listen		= -1,
 	.fd_control_listen	= -1,
 	.fd_repair_listen	= -1,
@@ -92,6 +93,8 @@ char *epoll_type_str[] = {
 	[EPOLL_TYPE_NL_NEIGH]		= "netlink neighbour notifier socket",
 	[EPOLL_TYPE_CONF_LISTEN]	= "configuration listening socket",
 	[EPOLL_TYPE_CONF]		= "configuration socket",
+	[EPOLL_TYPE_VHOST_CALL]		= "vhost-kernel call socket",
+	[EPOLL_TYPE_VHOST_ERROR]	= "vhost-kernel error socket",
 };
 static_assert(ARRAY_SIZE(epoll_type_str) == EPOLL_NUM_TYPES,
 	      "epoll_type_str[] doesn't match enum epoll_type");

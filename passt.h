@@ -183,8 +183,11 @@ struct ip6_ctx {
  * @fd_repair_listen:	File descriptor for listening TCP_REPAIR socket, if any
  * @fd_repair:		Connected AF_UNIX socket for TCP_REPAIR helper
  * @our_tap_mac:	Pasta/passt's MAC on the tap link
+ * @fd_vhost:		File descriptor for /dev/vhost-net, set on vhost setup
  * @guest_mac:		MAC address of guest or namespace, seen or configured
  * @hash_secret:	128-bit secret for siphash functions
+ * @virtio_features:	Negotiated virtio feature bits
+ * @vhost:		Enable vhost-kernel acceleration for pasta
  * @ifi4:		Template interface for IPv4, -1: none, 0: IPv4 disabled
  * @ip4:		IPv4 configuration
  * @dns_search:		DNS search list
@@ -202,6 +205,8 @@ struct ip6_ctx {
  * @no_udp:		Disable UDP operation
  * @udp:		Context for UDP protocol handler
  * @no_icmp:		Disable ICMP operation
+ * @vq:		Per-virtqueue eventfd descriptors for vhost-kernel
+ *		([0] is RX, [1] is TX; each holds kick_fd, call_fd, err_fd)
  * @mtu:		MTU passed via DHCP/NDP
  * @no_dns:		Do not source/use DNS servers for any purpose
  * @no_dns_search:	Do not source/use domain search lists for any purpose
@@ -258,11 +263,14 @@ struct ctx {
 	int fd_control;
 	int fd_repair_listen;
 	int fd_repair;
+
+	int fd_vhost;
 	unsigned char our_tap_mac[ETH_ALEN];
 	unsigned char guest_mac[ETH_ALEN];
 	uint16_t mtu;
 
 	uint64_t hash_secret[2];
+	uint64_t virtio_features;
 
 	int ifi4;
 	struct ip4_ctx ip4;
@@ -288,6 +296,12 @@ struct ctx {
 	struct udp_ctx udp;
 	int no_icmp;
 
+	struct {
+		int kick_fd;
+		int call_fd;
+		int err_fd;
+	} vq[2];
+
 	int no_dns;
 	int no_dns_search;
 	int no_dhcp_dns;
@@ -300,6 +314,7 @@ struct ctx {
 	int splice_only;
 	int host_lo_to_ns_lo;
 	int freebind;
+	int vhost;
 	bool chroot_fallback;
 
 	int low_wmem;
