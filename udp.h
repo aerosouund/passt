@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
+#include <linux/virtio_net.h>
 
 #include "tap_hdr.h"
 #include "fwd.h"
@@ -49,7 +50,10 @@ extern struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
 struct udp_meta_t {
 	struct ipv6hdr ip6h;
 	struct iphdr ip4h;
-	struct tap_hdr taph;
+	union {
+		struct virtio_net_hdr_mrg_rxbuf vnet_hdr;
+		struct tap_hdr taph;
+};
 #ifdef __AVX2__
 } __attribute__((aligned(32)));
 #else

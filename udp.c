@@ -103,6 +103,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <linux/errqueue.h>
+#include <linux/virtio_net.h>
 
 #include "checksum.h"
 #include "util.h"
@@ -119,6 +120,18 @@
 #include "udp_vu.h"
 #include "epoll_ctl.h"
 
+/* UDP header and data for inbound messages */
+struct udp_payload_t udp_payload[UDP_MAX_FRAMES];
+
+/* Ethernet headers for IPv4 and IPv6 frames */
+struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
+
+/* IOVs and msghdr arrays for receiving datagrams from sockets */
+struct iovec	udp_iov_recv		[UDP_MAX_FRAMES];
+struct mmsghdr	udp_mh_recv		[UDP_MAX_FRAMES];
+
+/* Pre-cooked headers for UDP packets */
+struct udp_meta_t udp_meta[UDP_MAX_FRAMES];
 
 #define UDP_TIMEOUT	"/proc/sys/net/netfilter/nf_conntrack_udp_timeout"
 #define UDP_TIMEOUT_STREAM	\
@@ -216,7 +229,20 @@ static void udp_iov_init_one(const struct ctx *c, size_t i)
 	*siov = IOV_OF_LVALUE(payload->data);
 
 	tiov[UDP_IOV_ETH] = IOV_OF_LVALUE(udp_eth_hdr[i]);
-	tiov[UDP_IOV_TAP] = tap_hdr_iov(c, &meta->taph);
+	/* if the vhost tap fd is initialized, this is a sign for us that
+	 * we will be using virtio transport. make the iov that is supposed
+	 * to point to a tap header point instead to a virtio_net_mrg_rxbuf
+	 */
+	if (c->fd_vhost != -1) {
+		struct iovec vnet_iov = {
+			.iov_base = (void *)(&meta->vnet_hdr),
+			.iov_len = sizeof(meta->vnet_hdr)
+		};
+		tiov[UDP_IOV_TAP] = vnet_iov;
+	} else {
+		tiov[UDP_IOV_TAP] = tap_hdr_iov(c, &meta->taph);
+	}
+
 	tiov[UDP_IOV_PAYLOAD].iov_base = payload;
 	tiov[UDP_IOV_ETH_PAD].iov_base = eth_pad;
 

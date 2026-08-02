@@ -21,6 +21,7 @@
 #include <netinet/ip.h>
 
 #include <netinet/tcp.h>
+#include <linux/virtio_net.h>
 
 #include "util.h"
 #include "ip.h"
@@ -38,7 +39,7 @@
 /* Ethernet header for IPv4 and IPv6 frames */
 struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
-struct tap_hdr tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 
 /* IP headers for IPv4 and IPv6 */
 struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
@@ -71,6 +72,14 @@ void tcp_update_l2_buf(const unsigned char *eth_d)
 		eth_update_mac(&tcp_eth_hdr[i], eth_d, NULL);
 }
 
+static inline struct iovec iov_from_virtio_net_hdr(struct virtio_net_hdr_mrg_rxbuf *hdr)
+{
+    return (struct iovec){
+            .iov_base = hdr,
+            .iov_len = sizeof(*hdr),
+    };
+}
+
 /**
  * tcp_sock_iov_init() - Initialise scatter-gather L2 buffers for IPv4 sockets
  * @c:		Execution context
@@ -89,7 +98,14 @@ void tcp_sock_iov_init(const struct ctx *c)
 	for (i = 0; i < TCP_FRAMES_MEM; i++) {
 		struct iovec *iov = tcp_l2_iov[i];
 
-		iov[TCP_IOV_TAP] = tap_hdr_iov(c, &tcp_payload_tap_hdr[i]);
+		/* If we are using pasta with vhost acceleration, the first entry in the tcp buffers
+		 * should point to a virtio_net header, otherwise a tap header 
+		 */		
+		if ((c->fd_vhost != -1))
+			iov[TCP_IOV_TAP] = iov_from_virtio_net_hdr(&tcp_payload_tap_hdr[i]);
+		else 
+			iov[TCP_IOV_TAP] = tap_hdr_iov(c, (struct tap_hdr *)&tcp_payload_tap_hdr[i]);
+
 		iov[TCP_IOV_ETH].iov_len = sizeof(struct ethhdr);
 		iov[TCP_IOV_PAYLOAD].iov_base = &tcp_payload[i];
 		iov[TCP_IOV_ETH_PAD].iov_base = eth_pad;
@@ -135,8 +151,7 @@ void tcp_payload_flush(const struct ctx *c, const struct timespec *now)
 {
 	size_t m;
 
-	m = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS,
-			    tcp_payload_used);
+	m = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS, tcp_payload_used);
 	if (m != tcp_payload_used) {
 		tcp_revert_seq(c, &tcp_frame_conns[m], &tcp_l2_iov[m],
 			       tcp_payload_used - m, now);
@@ -177,7 +192,7 @@ static void tcp_l2_buf_fill_headers(const struct ctx *c,
 {
 	struct iov_tail tail = IOV_TAIL(&iov[TCP_IOV_PAYLOAD], 1, 0);
 	struct tcphdr th_storage, *th = IOV_REMOVE_HEADER(&tail, th_storage);
-	struct tap_hdr *taph = iov[TCP_IOV_TAP].iov_base;
+
 	const struct flowside *tapside = TAPFLOW(conn);
 	const struct in_addr *a4 = inany_v4(&tapside->oaddr);
 	struct ethhdr *eh = iov[TCP_IOV_ETH].iov_base;
@@ -192,7 +207,19 @@ static void tcp_l2_buf_fill_headers(const struct ctx *c,
 
 	l2len = tcp_fill_headers(c, conn, eh, ip4h, ip6h, th, &tail,
 				 iov_tail_size(&tail), csum_flags, seq);
-	tap_hdr_update(taph, l2len);
+
+	/* when in pasta mode, the length of the tap header iov is zero, so this
+	 * l2len write doesn't do anything. But this function gets called from both
+	 * pasta and passt. Make the l2len write in case we are in passt mode, denoted by
+	 * fd_vhost being -1 since this field won't get initialized at all in passt.
+	 */
+	if (c->mode == MODE_PASST) {
+		iov[TCP_IOV_TAP].iov_len = sizeof(struct tap_hdr);
+		struct tap_hdr *taph = iov[TCP_IOV_TAP].iov_base;
+		tap_hdr_update(taph, l2len);
+	} else if (c->fd_vhost == -1) { /* pasta mode but without vhost */
+		iov[TCP_IOV_TAP].iov_len = 0;
+	}
 }
 
 /**
