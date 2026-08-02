@@ -361,7 +361,32 @@ void tap_icmp6_send(const struct ctx *c,
 }
 
 /**
- * tap_send_frames_pasta() - Send multiple frames to the pasta tap
+ * tx_reap() - Reclaim the descriptors the kernel has already processed
+ */
+static void tx_reap(void) {
+	struct vring_used *used = &vring_used_all[1].used;
+	uint16_t used_idx = le16toh(used->idx);
+
+	smp_rmb();
+
+	/* increment last_used_idx until it reaches the kernel's used index */
+	while (vqs[1].last_used_idx != used_idx)  {
+		uint16_t desc_id = le32toh(used->ring[vqs[1].last_used_idx % VHOST_NDESCS].id);
+		
+		for (;;) {
+			/* keep going until we find a descriptor without the next flag */
+			vqs[1].num_free++;
+			if (!(le16toh(vring_desc[1][desc_id].flags) & VRING_DESC_F_NEXT))
+				break;
+			/* this descriptor wasn't the last, set desc_id to the next one and keep going */
+			desc_id = le16toh(vring_desc[1][desc_id].next);
+		}
+		vqs[1].last_used_idx++;
+	}
+}
+
+/**
+ * tap_send_frames_vhost() - Send multiple frames to the pasta tap
  * @c:			Execution context
  * @iov:		Array of buffers
  * @bufs_per_frame:	Number of buffers (iovec entries) per frame
@@ -371,6 +396,90 @@ void tap_icmp6_send(const struct ctx *c,
  * @bufs_per_frame contiguous buffers representing a single frame.
  *
  * Return: number of frames successfully sent
+ */
+static size_t tap_send_frames_vhost(const struct ctx *c,
+				    const struct iovec *iov,
+				    size_t bufs_per_frame, size_t nframes)
+{
+	size_t i;
+	size_t processed_frames = 0;
+
+	#define AVAIL_Q(i)(vring_avail_all[i].avail)
+
+	/* reclaim descriptors if we don't have enough available buffers to perform this send */
+	if (vqs[1].num_free < bufs_per_frame * nframes) {
+		tx_reap();
+	}
+
+	for (i = 0; i < nframes; i++) {
+		size_t j;
+
+		/* it's likely that tx_reap returned to us less than bufs_per_frame descs */
+		if (vqs[1].num_free < bufs_per_frame)
+			break;
+
+		/* set the index of the avail ring in the tx queue to be our last_used_idx */
+		uint16_t head = vqs[1].next_free % VHOST_NDESCS;
+		AVAIL_Q(1).ring[(AVAIL_Q(1).idx + i) % VHOST_NDESCS] = htole16(head);
+
+		/* we will be consuming bufs_per_frame descriptors for every frame, decrement the local num_free */
+		vqs[1].num_free -= bufs_per_frame;
+
+		for (j = 0; j < bufs_per_frame; ++j) {
+			/* get the last_used_idx descriptor */
+			struct vring_desc *desc = &vring_desc[1][vqs[1].next_free % VHOST_NDESCS];
+			/*
+			 * the iov variable contains the iovecs for all frames we will send.
+			 * access a single fragment of a frame (each fragment is one of tcp_iov_parts)
+			 * denoted by iov at index i (index of the frame being processed) * bufs_per_frame 
+			 * plus j (the index of the fragment being processed)
+			 */	
+			const struct iovec *iov_i = &iov[i * bufs_per_frame + j];
+
+			/* 
+			 * set that descriptor's address to the base of the iov and set the VRING_DESC_F_NEXT
+			 * flag on the descriptor if its not the last frame fragment, so that the
+			 * guest would recieve the entire frame in one go. 
+			 */
+			desc->addr = (uint64_t)iov_i->iov_base;
+			desc->len = iov_i->iov_len;
+			desc->flags = (j == bufs_per_frame - 1) ? 0 : htole16(VRING_DESC_F_NEXT);
+			vqs[1].next_free++;
+		}
+
+		processed_frames++;
+	}
+
+	/* we didn't process any frames, no need to notify the kernel */
+	if ((processed_frames == 0))
+		return 0;
+
+	smp_wmb();
+	/* we will have used nframes descriptor chains */
+	AVAIL_Q(1).idx = htole16(le16toh(AVAIL_Q(1).idx)+processed_frames);
+
+	vhost_kick(&vring_used_all[1].used, c->vq[1].kick_fd);
+
+	/* wait until the kernel finishes processing this send */
+	while (AVAIL_Q(1).idx != vring_used_all[1].used.idx) {}
+	#undef AVAIL_Q
+
+	return processed_frames;
+}
+
+
+/**
+ * tap_send_frames_pasta() - Send multiple frames to the pasta tap
+ * @c:			Execution context
+ * @iov:		Array of buffers
+ * @bufs_per_frame:	Number of buffers (iovec entries) per frame
+ * @nframes:		Number of frames to send
+ * @vhost:             Use vhost-kernel or not
+ *
+ * @iov must have total length @bufs_per_frame * @nframes, with each set of
+ * @bufs_per_frame contiguous buffers representing a single frame.
+ *
+ * Return: number of frames successfully sent (or queued)
  *
  * #syscalls:pasta write
  */
@@ -380,6 +489,9 @@ static size_t tap_send_frames_pasta(const struct ctx *c,
 {
 	size_t nbufs = bufs_per_frame * nframes;
 	size_t i;
+
+	if (vhost)
+		return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
 
 	for (i = 0; i < nbufs; i += bufs_per_frame) {
 		ssize_t rc = writev(c->fd_tap, iov + i, bufs_per_frame);
