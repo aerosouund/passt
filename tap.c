@@ -1572,7 +1572,8 @@ static void tap_start_connection(const struct ctx *c)
 		break;
 	}
 
-	epoll_add(c->epollfd, EPOLLIN | EPOLLRDHUP, ref);
+	if (!c->vhost)
+		epoll_add(c->epollfd, EPOLLIN | EPOLLRDHUP, ref);
 
 	if (!tap_is_ready(c))
 		return;
