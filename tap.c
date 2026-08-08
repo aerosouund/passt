@@ -405,7 +405,7 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 	size_t processed_frames = 0;
 
 	/* update our local counters first */
-	tx_reap();
+	// tx_reap();
 
 	#define AVAIL_Q(i)(vring_avail_all[i].avail)
 
