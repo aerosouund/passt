@@ -406,14 +406,6 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 	#define AVAIL_Q(i)(vring_avail_all[i].avail)
 
-	/* update our local counters first */
-	// vring avail is where we post updates. the breaking condition is when
-	// this value equal to the number that indicates the kernel's last processed
-	while (vring_avail_all[1].avail.idx != vring_used_all[1].used.idx) {
-		tx_reap();
-	}
-
-
 	for (i = 0; i < nframes; i++) {
 		size_t j;
 
@@ -459,9 +451,16 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 	smp_wmb();
 	/* we will have used nframes descriptor chains */
 	AVAIL_Q(1).idx = htole16(le16toh(AVAIL_Q(1).idx)+processed_frames);
-	#undef AVAIL_Q
 
 	vhost_kick(&vring_used_all[1].used, c->vq[1].kick_fd);
+
+	/* synchronous send: don't return until the kernel has consumed
+	 * everything we just queued
+	 */
+	while (le16toh(AVAIL_Q(1).idx) != le16toh(vring_used_all[1].used.idx))
+		tx_reap();
+
+	#undef AVAIL_Q
 
 	return processed_frames;
 }
