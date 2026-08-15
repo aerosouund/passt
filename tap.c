@@ -457,8 +457,16 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 	/* synchronous send: don't return until the kernel has consumed
 	 * everything we just queued
 	 */
-	while (vqs[1].last_used_idx != le16toh(AVAIL_Q(1).idx))
+	// if the reclaimed index is not equal to what the kernel has said
+	while (vqs[1].last_used_idx != le16toh(AVAIL_Q(1).idx)) {
+		// only reclaim if the kernel has finished processing what we posted
+		// indicated by used_ring.idx being equal to avail_ring.idx
+		if (AVAIL_Q(1).idx != vring_used_all[1].used.idx)
+			continue;
+		
     	tx_reap();
+	}
+	
 
 	#undef AVAIL_Q
 
