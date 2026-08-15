@@ -463,9 +463,9 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 	vhost_kick(&vring_used_all[1].used, c->vq[1].kick_fd);
 
-	while (vring_used_all[1].used.idx != vring_avail_all[1].avail.idx) {
+	// while (vring_used_all[1].used.idx != vring_avail_all[1].avail.idx) {
 		// loop until the kernel finishes receiving 
-	}
+	// }
 
 	#undef AVAIL_Q
 
