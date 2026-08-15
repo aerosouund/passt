@@ -53,21 +53,24 @@ static_assert(MSS6 <= sizeof(tcp_payload[0].data), "MSS6 is greater than 65516")
 
 /* References tracking the owner connection of frames in the tap outqueue */
 static struct tcp_tap_conn *tcp_frame_conns[TCP_FRAMES_MEM];
-// static unsigned int tcp_idx->tcp_buf_idx;
 
+/* tcp_buf_idx: next slot to be filled, monotonically increasing.
+ * processed: next slot to be sent, monotonically increasing, always
+ * <= tcp_buf_idx. Both are indices mod TCP_FRAMES_MEM into the fixed-size
+ * frame arrays below, wrapping around as a ring buffer.
+ */
 static struct tcp_payload_idx {
 	unsigned int tcp_buf_idx;
-	unsigned int processed
-} *tcp_idx;
+	unsigned int processed;
+} tcp_idx_storage;
+static struct tcp_payload_idx *tcp_idx = &tcp_idx_storage;
 
 #define TCP_CURR_IDX (tcp_idx->tcp_buf_idx % TCP_FRAMES_MEM)
-#define TCP_FRAME_COUNT ((tcp_idx->tcp_buf_idx % TCP_FRAMES_MEM) - (tcp_idx->processed % TCP_FRAMES_MEM))
-
-/*
-when we are about to send frames, increment some counter
-when we flush the payload, increment another counter to make it 
-reach the first struct
-*/
+/* Number of frames filled but not yet sent. Never mod the operands
+ * separately: tcp_buf_idx and processed are monotonic counters, only
+ * their difference (bounded by TCP_FRAMES_MEM) is meaningful mod N.
+ */
+#define TCP_FRAME_COUNT (tcp_idx->tcp_buf_idx - tcp_idx->processed)
 
 /* recvmsg()/sendmsg() data for tap */
 static struct iovec	iov_sock		[TCP_FRAMES_MEM + DISCARD_IOV_NUM];
@@ -163,14 +166,40 @@ static void tcp_revert_seq(const struct ctx *c, struct tcp_tap_conn **conns,
  */
 void tcp_payload_flush(const struct ctx *c, const struct timespec *now)
 {
-	size_t m;
+	unsigned int total = TCP_FRAME_COUNT;
+	unsigned int start = tcp_idx->processed % TCP_FRAMES_MEM;
+	unsigned int first, sent;
 
-	m = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS, tcp_current_frame_count());
-	if (m != tcp_idx->tcp_buf_idx) {
-		tcp_revert_seq(c, &tcp_frame_conns[m], &tcp_l2_iov[m],
-			       tcp_idx->tcp_buf_idx - m, now);
+	if (!total)
+		return;
+
+	/* The pending region can wrap past the end of the fixed-size frame
+	 * arrays: send the contiguous tail first, then, if anything wrapped
+	 * around to the front, send that as a separate call.
+	 */
+	first = MIN(total, TCP_FRAMES_MEM - start);
+
+	sent = tap_send_frames(c, &tcp_l2_iov[start][0], TCP_NUM_IOVS, first);
+	if (sent < first) {
+		tcp_revert_seq(c, &tcp_frame_conns[start + sent],
+			       &tcp_l2_iov[start + sent], first - sent, now);
+		goto out;
 	}
-	tcp_idx->processed += tcp_idx->tcp_buf_idx - tcp_idx->processed;
+
+	if (total > first) {
+		unsigned int second = total - first;
+		size_t m2 = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS,
+					    second);
+
+		sent += m2;
+		if (m2 < second) {
+			tcp_revert_seq(c, &tcp_frame_conns[m2], &tcp_l2_iov[m2],
+				       second - m2, now);
+		}
+	}
+
+out:
+	tcp_idx->processed += sent;
 }
 
 /**
@@ -283,8 +312,9 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 	tcp_l2_buf_pad(iov);
 
 	if (flags & DUP_ACK) {
-		struct iovec *dup_iov = tcp_l2_iov[tcp_idx->tcp_buf_idx];
-		tcp_frame_conns[tcp_idx->tcp_buf_idx++] = conn;
+		struct iovec *dup_iov = tcp_l2_iov[TCP_CURR_IDX];
+		tcp_frame_conns[TCP_CURR_IDX] = conn;
+		tcp_idx->tcp_buf_idx++;
 
 		memcpy(dup_iov[TCP_IOV_TAP].iov_base, iov[TCP_IOV_TAP].iov_base,
 		       iov[TCP_IOV_TAP].iov_len);
@@ -296,7 +326,7 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 		dup_iov[TCP_IOV_ETH_PAD].iov_len = iov[TCP_IOV_ETH_PAD].iov_len;
 	}
 
-	if (tcp_idx->tcp_buf_idx > TCP_FRAMES_MEM - 2)
+	if (TCP_FRAME_COUNT > TCP_FRAMES_MEM - 2)
 		tcp_payload_flush(c, now);
 
 	return 0;
@@ -321,11 +351,13 @@ static void tcp_data_to_tap(const struct ctx *c, struct tcp_tap_conn *conn,
 	struct iovec *iov;
 
 	conn->seq_to_tap = seq + dlen;
-	tcp_frame_conns[tcp_idx->tcp_buf_idx] = conn;
-	iov = tcp_l2_iov[tcp_idx->tcp_buf_idx];
+	tcp_frame_conns[TCP_CURR_IDX] = conn;
+	iov = tcp_l2_iov[TCP_CURR_IDX];
 	if (CONN_V4(conn)) {
 		if (no_csum) {
-			struct iovec *iov_prev = tcp_l2_iov[TCP_CURR_IDX - 1];
+			unsigned int prev_idx = (TCP_CURR_IDX + TCP_FRAMES_MEM - 1) %
+						 TCP_FRAMES_MEM;
+			struct iovec *iov_prev = tcp_l2_iov[prev_idx];
 			const struct iphdr *iph = iov_prev[TCP_IOV_IP].iov_base;
 
 			/* overwrite IP4_CSUM flag as we set the checksum */
@@ -348,7 +380,7 @@ static void tcp_data_to_tap(const struct ctx *c, struct tcp_tap_conn *conn,
 	tcp_l2_buf_pad(iov);
 
 	tcp_idx->tcp_buf_idx++;
-	if (TCP_CURR_IDX > TCP_FRAMES_MEM - 1)
+	if (TCP_FRAME_COUNT > TCP_FRAMES_MEM - 1)
 		tcp_payload_flush(c, now);
 }
 
@@ -388,15 +420,11 @@ int tcp_buf_data_from_sock(const struct ctx *c, struct tcp_tap_conn *conn,
 		return -1;
 	}
 
-	if (tcp_idx->tcp_buf_idx + fill_bufs > TCP_FRAMES_MEM) {
+	if (TCP_FRAME_COUNT + (unsigned int)fill_bufs > TCP_FRAMES_MEM)
 		tcp_payload_flush(c, now);
 
-		/* Silence Coverity CWE-125 false positive */
-		tcp_idx->tcp_buf_idx = 0;
-	}
-
 	for (i = 0, iov = iov_sock + DISCARD_IOV_NUM; i < fill_bufs; i++, iov++) {
-		iov->iov_base = &tcp_payload[TCP_CURR_IDX + i].data; // will this bug out at all ?
+		iov->iov_base = &tcp_payload[(TCP_CURR_IDX + i) % TCP_FRAMES_MEM].data;
 		iov->iov_len = mss;
 	}
 	if (iov_rem)
