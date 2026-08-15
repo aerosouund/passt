@@ -488,8 +488,8 @@ static size_t tap_send_frames_pasta(const struct ctx *c,
 	size_t nbufs = bufs_per_frame * nframes;
 	size_t i;
 
-	if (vhost)
-		return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
+	// if (vhost)
+	// 	return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
 
 	for (i = 0; i < nbufs; i += bufs_per_frame) {
 		ssize_t rc = writev(c->fd_tap, iov + i, bufs_per_frame);
