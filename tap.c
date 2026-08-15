@@ -406,11 +406,20 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 	#define AVAIL_Q(i)(vring_avail_all[i].avail)
 
+	/* synchronous send: don't return until the kernel has consumed
+	 * everything we just queued
+	 */
+	if (vqs[1].num_free < bufs_per_frame * nframes) {
+		while (vqs[1].last_used_idx != le16toh(AVAIL_Q(1).idx)) 	
+    		tx_reap();
+	} 
+
+
 	for (i = 0; i < nframes; i++) {
 		size_t j;
 
-		if (vqs[1].num_free < bufs_per_frame)
-			break;
+		// if (vqs[1].num_free < bufs_per_frame)
+		// 	break;
 
 		/* set the index of the avail ring in the tx queue to be our last_used_idx */
 		uint16_t head = vqs[1].next_free % VHOST_NDESCS;
@@ -454,19 +463,6 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 	vhost_kick(&vring_used_all[1].used, c->vq[1].kick_fd);
 
-	/* synchronous send: don't return until the kernel has consumed
-	 * everything we just queued
-	 */
-	// if the reclaimed index is not equal to what the kernel has said
-	while (vqs[1].last_used_idx != le16toh(AVAIL_Q(1).idx)) {
-		// only reclaim if the kernel has finished processing what we posted
-		// indicated by used_ring.idx being equal to avail_ring.idx
-		if (AVAIL_Q(1).idx != vring_used_all[1].used.idx)
-			continue;
-		
-    	tx_reap();
-	}
-	
 
 	#undef AVAIL_Q
 
