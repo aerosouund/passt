@@ -457,8 +457,8 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 	/* synchronous send: don't return until the kernel has consumed
 	 * everything we just queued
 	 */
-	while (le16toh(AVAIL_Q(1).idx) != le16toh(vring_used_all[1].used.idx))
-		tx_reap();
+	while (vqs[1].last_used_idx != le16toh(AVAIL_Q(1).idx))
+    	tx_reap();
 
 	#undef AVAIL_Q
 
