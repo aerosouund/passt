@@ -406,10 +406,11 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 
 	#define AVAIL_Q(i)(vring_avail_all[i].avail)
 
-	/* reclaim descriptors if we don't have enough available buffers to perform this send */
 	if (vqs[1].num_free < bufs_per_frame * nframes) {
-		tx_reap();
-	}
+		while (vqs[1].last_used_idx != le16toh(AVAIL_Q(1).idx)) 	
+    		tx_reap();
+	} 
+
 
 	for (i = 0; i < nframes; i++) {
 		size_t j;
@@ -489,7 +490,7 @@ static size_t tap_send_frames_pasta(const struct ctx *c,
 	size_t i;
 
 	if (vhost)
-		return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
+	 	return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
 
 	for (i = 0; i < nbufs; i += bufs_per_frame) {
 		ssize_t rc = writev(c->fd_tap, iov + i, bufs_per_frame);
