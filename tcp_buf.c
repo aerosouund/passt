@@ -53,7 +53,21 @@ static_assert(MSS6 <= sizeof(tcp_payload[0].data), "MSS6 is greater than 65516")
 
 /* References tracking the owner connection of frames in the tap outqueue */
 static struct tcp_tap_conn *tcp_frame_conns[TCP_FRAMES_MEM];
-static unsigned int tcp_payload_used;
+
+/* tcp_buf_idx: The last index we wrote data to in the tcp buffers
+ * processed: Last index we pushed to the underlying connection 
+ */
+static struct tcp_payload_idx {
+	unsigned int tcp_buf_idx;
+	unsigned int processed;
+} tcp_idx_storage;
+static struct tcp_payload_idx *tcp_idx = &tcp_idx_storage;
+
+/* latest index we wrote to into the tcp buffers */
+#define TCP_CURR_IDX (tcp_idx->tcp_buf_idx % TCP_FRAMES_MEM)
+
+/* current amount of frames queued in tcp buffers but not sent*/
+#define TCP_FRAME_COUNT (tcp_idx->tcp_buf_idx - tcp_idx->processed)
 
 /* recvmsg()/sendmsg() data for tap */
 static struct iovec	iov_sock		[TCP_FRAMES_MEM + DISCARD_IOV_NUM];
@@ -149,14 +163,42 @@ static void tcp_revert_seq(const struct ctx *c, struct tcp_tap_conn **conns,
  */
 void tcp_payload_flush(const struct ctx *c, const struct timespec *now)
 {
-	size_t m;
+	unsigned int total = TCP_FRAME_COUNT;
+	unsigned int start = tcp_idx->processed % TCP_FRAMES_MEM;
+	unsigned int first_batch_size, sent;
 
-	m = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS, tcp_payload_used);
-	if (m != tcp_payload_used) {
-		tcp_revert_seq(c, &tcp_frame_conns[m], &tcp_l2_iov[m],
-			       tcp_payload_used - m, now);
+	if (!total)
+		return;
+
+	/* What is smaller ? all we what we want to send ? or 128 - the index
+	 * indicating the start of where we wrote this batch ?
+	 */
+	first_batch_size = MIN(total, TCP_FRAMES_MEM - start);
+
+	sent = tap_send_frames(c, &tcp_l2_iov[start][0], TCP_NUM_IOVS, first_batch_size);
+	if (sent < first_batch_size) {
+		tcp_revert_seq(c, &tcp_frame_conns[start + sent],
+			       &tcp_l2_iov[start + sent], first_batch_size - sent, now);
+		goto out;
 	}
-	tcp_payload_used = 0;
+
+	/* There was more data to send than from tcp_idx->processed up to 128.
+	 * the rest of the batch is going to be at index 0 up total - first_batch_size.
+	 */
+	if (total > first_batch_size) {
+		unsigned int second_batch_size = total - first_batch_size;
+		size_t m2 = tap_send_frames(c, &tcp_l2_iov[0][0], TCP_NUM_IOVS,
+					    second_batch_size);
+
+		sent += m2;
+		if (m2 < second_batch_size) {
+			tcp_revert_seq(c, &tcp_frame_conns[m2], &tcp_l2_iov[m2],
+				       second_batch_size - m2, now);
+		}
+	}
+
+out:
+	tcp_idx->processed += sent;
 }
 
 /**
@@ -241,13 +283,13 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 	uint32_t seq;
 	int ret;
 
-	iov = tcp_l2_iov[tcp_payload_used];
+	iov = tcp_l2_iov[TCP_CURR_IDX];
 	if (CONN_V4(conn))
-		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp4_payload_ip[tcp_payload_used]);
+		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp4_payload_ip[TCP_CURR_IDX]);
 	else
-		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp6_payload_ip[tcp_payload_used]);
+		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp6_payload_ip[TCP_CURR_IDX]);
 
-	iov[TCP_IOV_ETH] = IOV_OF_LVALUE(tcp_eth_hdr[tcp_payload_used]);
+	iov[TCP_IOV_ETH] = IOV_OF_LVALUE(tcp_eth_hdr[TCP_CURR_IDX]);
 	payload = iov[TCP_IOV_PAYLOAD].iov_base;
 	seq = conn->seq_to_tap;
 	ret = tcp_prepare_flags(c, conn, flags, &payload->th,
@@ -256,7 +298,8 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 	if (ret <= 0)
 		return ret;
 
-	tcp_frame_conns[tcp_payload_used++] = conn;
+	tcp_idx->tcp_buf_idx++;
+	tcp_frame_conns[TCP_CURR_IDX] = conn;
 	l4len = optlen + sizeof(struct tcphdr);
 	iov[TCP_IOV_PAYLOAD].iov_len = l4len;
 
@@ -268,8 +311,9 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 	tcp_l2_buf_pad(iov);
 
 	if (flags & DUP_ACK) {
-		struct iovec *dup_iov = tcp_l2_iov[tcp_payload_used];
-		tcp_frame_conns[tcp_payload_used++] = conn;
+		struct iovec *dup_iov = tcp_l2_iov[TCP_CURR_IDX];
+		tcp_frame_conns[TCP_CURR_IDX] = conn;
+		tcp_idx->tcp_buf_idx++;
 
 		memcpy(dup_iov[TCP_IOV_TAP].iov_base, iov[TCP_IOV_TAP].iov_base,
 		       iov[TCP_IOV_TAP].iov_len);
@@ -281,7 +325,7 @@ int tcp_buf_send_flag(const struct ctx *c, struct tcp_tap_conn *conn, int flags,
 		dup_iov[TCP_IOV_ETH_PAD].iov_len = iov[TCP_IOV_ETH_PAD].iov_len;
 	}
 
-	if (tcp_payload_used > TCP_FRAMES_MEM - 2)
+	if (TCP_FRAME_COUNT > TCP_FRAMES_MEM - 2)
 		tcp_payload_flush(c, now);
 
 	return 0;
@@ -306,21 +350,27 @@ static void tcp_data_to_tap(const struct ctx *c, struct tcp_tap_conn *conn,
 	struct iovec *iov;
 
 	conn->seq_to_tap = seq + dlen;
-	tcp_frame_conns[tcp_payload_used] = conn;
-	iov = tcp_l2_iov[tcp_payload_used];
+	tcp_frame_conns[TCP_CURR_IDX] = conn;
+	iov = tcp_l2_iov[TCP_CURR_IDX];
 	if (CONN_V4(conn)) {
 		if (no_csum) {
-			struct iovec *iov_prev = tcp_l2_iov[tcp_payload_used - 1];
+			/* TCP_CURR_INDEX may be zero if the underlying tcp_idx.tcp_buf_idx
+			 * is a multiple of 128, minus one will yield an invalid index.
+			 * The previous index to 0 is 127.
+			 */
+			unsigned int prev_idx = (TCP_CURR_IDX + TCP_FRAMES_MEM - 1) %
+						 TCP_FRAMES_MEM;
+			struct iovec *iov_prev = tcp_l2_iov[prev_idx];
 			const struct iphdr *iph = iov_prev[TCP_IOV_IP].iov_base;
 
 			/* overwrite IP4_CSUM flag as we set the checksum */
 			check = iph->check;
 		}
-		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp4_payload_ip[tcp_payload_used]);
+		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp4_payload_ip[TCP_CURR_IDX]);
 	} else if (CONN_V6(conn)) {
-		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp6_payload_ip[tcp_payload_used]);
+		iov[TCP_IOV_IP] = IOV_OF_LVALUE(tcp6_payload_ip[TCP_CURR_IDX]);
 	}
-	iov[TCP_IOV_ETH].iov_base = &tcp_eth_hdr[tcp_payload_used];
+	iov[TCP_IOV_ETH].iov_base = &tcp_eth_hdr[TCP_CURR_IDX];
 	payload = iov[TCP_IOV_PAYLOAD].iov_base;
 	payload->th.th_off = sizeof(struct tcphdr) / 4;
 	payload->th.th_x2 = 0;
@@ -332,7 +382,8 @@ static void tcp_data_to_tap(const struct ctx *c, struct tcp_tap_conn *conn,
 
 	tcp_l2_buf_pad(iov);
 
-	if (++tcp_payload_used > TCP_FRAMES_MEM - 1)
+	tcp_idx->tcp_buf_idx++;
+	if (TCP_FRAME_COUNT > TCP_FRAMES_MEM - 1)
 		tcp_payload_flush(c, now);
 }
 
@@ -372,15 +423,11 @@ int tcp_buf_data_from_sock(const struct ctx *c, struct tcp_tap_conn *conn,
 		return -1;
 	}
 
-	if (tcp_payload_used + fill_bufs > TCP_FRAMES_MEM) {
+	if (TCP_FRAME_COUNT + (unsigned int)fill_bufs > TCP_FRAMES_MEM)
 		tcp_payload_flush(c, now);
 
-		/* Silence Coverity CWE-125 false positive */
-		tcp_payload_used = 0;
-	}
-
 	for (i = 0, iov = iov_sock + DISCARD_IOV_NUM; i < fill_bufs; i++, iov++) {
-		iov->iov_base = &tcp_payload[tcp_payload_used + i].data;
+		iov->iov_base = &tcp_payload[(TCP_CURR_IDX + i) % TCP_FRAMES_MEM].data;
 		iov->iov_len = mss;
 	}
 	if (iov_rem)
@@ -454,7 +501,7 @@ int tcp_buf_data_from_sock(const struct ctx *c, struct tcp_tap_conn *conn,
 	dlen = mss;
 	seq = conn->seq_to_tap;
 	for (i = 0; i < send_bufs; i++) {
-		int no_csum = i && i != send_bufs - 1 && tcp_payload_used;
+		int no_csum = i && i != send_bufs - 1 && TCP_CURR_IDX;
 		bool push = false;
 
 		if (i == send_bufs - 1) {
