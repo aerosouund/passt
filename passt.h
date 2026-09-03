@@ -13,7 +13,10 @@ union epoll_ref;
 
 #include <stdbool.h>
 #include <assert.h>
+#include <limits.h>
 #include <sys/epoll.h>
+
+#include <linux/virtio_net.h>
 
 #include "pif.h"
 #include "packet.h"
@@ -35,8 +38,43 @@ union epoll_ref;
 #define MAC_OUR_LAA	\
 	((uint8_t [ETH_ALEN]){0x9a, 0x55, 0x9a, 0x55, 0x9a, 0x55})
 
-/* Large enough for ~128 maximum size frames */
-#define PKT_BUF_BYTES		(8UL << 20)
+
+/** L2_MAX_LEN_PASTA - Maximum frame length for pasta mode (with L2 header)
+ *
+ * The kernel tuntap device imposes a maximum frame size of 65535 including
+ * 'hard_header_len' (14 bytes for L2 Ethernet in the case of "tap" mode).
+ */
+#define L2_MAX_LEN_PASTA	USHRT_MAX
+
+/** L2_MAX_LEN_PASST - Maximum frame length for passt mode (with L2 header)
+ *
+ * The only structural limit the QEMU socket protocol imposes on frames is
+ * (2^32-1) bytes, but that would be ludicrously long in practice.  For now,
+ * limit it somewhat arbitrarily to 65535 bytes.  FIXME: Work out an appropriate
+ * limit with more precision.
+ */
+#define L2_MAX_LEN_PASST	USHRT_MAX
+
+/** L2_MAX_LEN_VU - Maximum frame length for vhost-user mode (with L2 header)
+ *
+ * vhost-user allows multiple buffers per frame, each of which can be quite
+ * large, so the inherent frame size limit is rather large.  Much larger than is
+ * actually useful for IP.  For now limit arbitrarily to 65535 bytes. FIXME:
+ * Work out an appropriate limit with more precision.
+ */
+#define L2_MAX_LEN_VU		USHRT_MAX
+
+/* Number of descriptors in each vhost-net virtqueue */
+#define VHOST_NDESCS		128
+
+/* Bytes of pkt_buf backing one from-guest descriptor: a maximum size frame
+ * plus the virtio-net header the kernel writes in front of it
+ */
+#define VHOST_DESC_BYTES	(L2_MAX_LEN_PASTA +			\
+				 sizeof(struct virtio_net_hdr_mrg_rxbuf))
+
+/* One maximum size frame per vhost-net descriptor */
+#define PKT_BUF_BYTES		(VHOST_NDESCS * VHOST_DESC_BYTES)
 
 extern char pkt_buf		[PKT_BUF_BYTES];
 
@@ -157,6 +195,40 @@ struct ip6_ctx {
 #include <netinet/if_ether.h>
 
 /**
+ * enum vhost_mode - Whether to use vhost-kernel acceleration
+ * @VHOST_MODE_AUTO:	Use it if it's available, fall back to plain tap if not
+ * @VHOST_MODE_ON:	Require it, fail if it's not available
+ * @VHOST_MODE_OFF:	Never use it
+ */
+enum vhost_mode {
+	VHOST_MODE_AUTO = 0,
+	VHOST_MODE_ON,
+	VHOST_MODE_OFF,
+};
+
+/**
+ * struct vhost_ctx - Execution context for vhost-kernel acceleration
+ * @mode:	Whether to use acceleration at all, see enum vhost_mode
+ * @fd:		File descriptor for /dev/vhost-net, -1 if not set up
+ * @features:	virtio feature bits negotiated with vhost-net
+ * @vq:		Per-virtqueue eventfds ([0] is from-guest, [1] is to-guest)
+ * @vq.kick_fd:	Written by us, to tell the kernel we queued something
+ * @vq.call_fd:	Written by the kernel, to tell us it queued something
+ * @vq.err_fd:	Written by the kernel on an internal vhost error
+ */
+struct vhost_ctx {
+	enum vhost_mode mode;
+	int fd;
+	uint64_t features;
+
+	struct {
+		int kick_fd;
+		int call_fd;
+		int err_fd;
+	} vq[2];
+};
+
+/**
  * struct ctx - Execution context
  * @mode:		Operation mode, qemu/UNIX domain socket or namespace/tap
  * @debug:		Enable debug mode
@@ -185,6 +257,7 @@ struct ip6_ctx {
  * @our_tap_mac:	Pasta/passt's MAC on the tap link
  * @guest_mac:		MAC address of guest or namespace, seen or configured
  * @hash_secret:	128-bit secret for siphash functions
+ * @vhost:		vhost-kernel acceleration context, pasta mode only
  * @ifi4:		Template interface for IPv4, -1: none, 0: IPv4 disabled
  * @ip4:		IPv4 configuration
  * @dns_search:		DNS search list
@@ -263,6 +336,8 @@ struct ctx {
 	uint16_t mtu;
 
 	uint64_t hash_secret[2];
+
+	struct vhost_ctx vhost;
 
 	int ifi4;
 	struct ip4_ctx ip4;

@@ -736,6 +736,9 @@ pasta_opts:
 		"    default: auto\n"
 		"  --host-lo-to-ns-lo	Translate host-loopback forwards to\n"
 		"			namespace loopback\n"
+		"  --vhost-kernel[=MODE]	Use vhost-kernel acceleration\n"
+		"    MODE is \"on\", \"off\" or \"auto\"\n"
+		"    default: auto\n"
 		"  --userns NSPATH 	Target user namespace to join\n"
 		"  --netns PATH|NAME	Target network namespace to join\n"
 		"  --netns-only		Don't join existing user namespace\n"
@@ -766,6 +769,7 @@ enum passt_modes conf_mode(int argc, char *argv[])
 	int vhost_user = 0;
 	const struct option optvu[] = {
 		{"vhost-user",	no_argument,		&vhost_user,	1 },
+		{"vhost-kernel", optional_argument,	NULL,		0 },
 		{ 0 },
 	};
 	char argv0[PATH_MAX], *basearg0;
@@ -1348,6 +1352,7 @@ void conf(struct ctx *c, int argc, char **argv)
 		{"stats", required_argument,		NULL,		31 },
 		{"conf-path",	required_argument,	NULL,		'c' },
 		{"chroot-fallback", no_argument,	NULL, 		32 },
+		{"vhost-kernel", optional_argument,	NULL,		33 },
 		{ 0 },
 	};
 	const char *optstring = "+dqfel:hs:c:F:I:p:P:m:a:n:M:g:i:o:D:S:H:461t:u:T:U:";
@@ -1588,6 +1593,20 @@ void conf(struct ctx *c, int argc, char **argv)
 			break;
 		case 32:
 			c->chroot_fallback = true;
+			break;
+		case 33:
+			if (c->mode != MODE_PASTA)
+				die("--vhost-kernel is for pasta mode only");
+
+			if (!optarg || !strcmp(optarg, "auto"))
+				c->vhost.mode = VHOST_MODE_AUTO;
+			else if (!strcmp(optarg, "on"))
+				c->vhost.mode = VHOST_MODE_ON;
+			else if (!strcmp(optarg, "off"))
+				c->vhost.mode = VHOST_MODE_OFF;
+			else
+				die("Invalid vhost-kernel mode: %s", optarg);
+
 			break;
 		case 'd':
 			c->debug = 1;
