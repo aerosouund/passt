@@ -38,7 +38,7 @@ PASST_SRCS = arch.c arp.c bitmap.c checksum.c conf.c dhcp.c dhcpv6.c \
 	isolation.c lineread.c log.c mld.c ndp.c netlink.c migrate.c packet.c \
 	parse.c passt.c pasta.c pcap.c pif.c repair.c serialise.c tap.c tcp.c \
 	tcp_buf.c tcp_splice.c tcp_vu.c udp.c udp_flow.c udp_vu.c util.c \
-	vhost_user.c virtio.c vu_common.c
+	vhost.c vhost_user.c virtio.c vu_common.c
 PASST_REPAIR_SRCS = passt-repair.c
 PESTO_SRCS = pesto.c bitmap.c fwd_rule.c inany.c ip.c lineread.c parse.c \
 	serialise.c

@@ -118,6 +118,7 @@
 #include "udp_internal.h"
 #include "udp_vu.h"
 #include "epoll_ctl.h"
+#include "vhost.h"
 
 #define UDP_MAX_FRAMES		32  /* max # of frames to receive at once */
 
@@ -127,6 +128,8 @@
 
 #define UDP_TIMEOUT_DEFAULT		30	/* s */
 #define UDP_TIMEOUT_STREAM_DEFAULT	120	/* s */
+
+#define UDP_NREGIONS 5
 
 /* Maximum UDP data to be returned in ICMP messages */
 #define ICMP4_MAX_DLEN 8
@@ -448,6 +451,23 @@ static void udp_send_tap_icmp4(const struct ctx *c,
 	tap_icmp4_send(c, saddr, eaddr, &msg, tap_omac, msglen);
 }
 
+/**
+ * udp_register_memory_region() - Register the UDP specific buffers into a memory
+ *                                struct so it can be shared with the kernel.
+ * @vhost_mem: The memory struct to register regions into
+ * @last_idx:  The last index at which memory region has been placed
+ */
+void udp_register_memory_regions(union vhost_memory_u *vhost_mem, size_t *last_idx) {
+	if ((*last_idx + UDP_NREGIONS) > N_VHOST_REGIONS)
+		die("udp: memory region overflow. maximum is %d, got %zu",
+		    N_VHOST_REGIONS, *last_idx + UDP_NREGIONS);
+	
+   	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(udp_payload);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(udp_eth_hdr);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(udp_iov_recv);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(udp_mh_recv);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(udp_meta);
+}
 
 /**
  * udp_send_tap_icmp6() - Construct and send ICMPv6 to local peer

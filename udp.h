@@ -11,6 +11,8 @@
 
 #include "fwd.h"
 
+union vhost_memory_u;
+
 void udp_listen_sock_handler(const struct ctx *c, union epoll_ref ref,
 			     uint32_t events, const struct timespec *now);
 void udp_sock_handler(const struct ctx *c, union epoll_ref ref,
@@ -21,6 +23,7 @@ int udp_tap_handler(const struct ctx *c, uint8_t pif,
 		    const struct timespec *now);
 int udp_init(struct ctx *c);
 void udp_update_l2_buf(const unsigned char *eth_d);
+void udp_register_memory_regions(union vhost_memory_u *vhost_mem, size_t *last_idx);
 
 /**
  * struct udp_ctx - Execution context for UDP
