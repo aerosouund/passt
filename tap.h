@@ -12,31 +12,6 @@
 #include "passt.h"
 #include "tap_hdr.h"
 
-/** L2_MAX_LEN_PASTA - Maximum frame length for pasta mode (with L2 header)
- *
- * The kernel tuntap device imposes a maximum frame size of 65535 including
- * 'hard_header_len' (14 bytes for L2 Ethernet in the case of "tap" mode).
- */
-#define L2_MAX_LEN_PASTA	USHRT_MAX
-
-/** L2_MAX_LEN_PASST - Maximum frame length for passt mode (with L2 header)
- *
- * The only structural limit the QEMU socket protocol imposes on frames is
- * (2^32-1) bytes, but that would be ludicrously long in practice.  For now,
- * limit it somewhat arbitrarily to 65535 bytes.  FIXME: Work out an appropriate
- * limit with more precision.
- */
-#define L2_MAX_LEN_PASST	USHRT_MAX
-
-/** L2_MAX_LEN_VU - Maximum frame length for vhost-user mode (with L2 header)
- *
- * vhost-user allows multiple buffers per frame, each of which can be quite
- * large, so the inherent frame size limit is rather large.  Much larger than is
- * actually useful for IP.  For now limit arbitrarily to 65535 bytes. FIXME:
- * Work out an appropriate limit with more precision.
- */
-#define L2_MAX_LEN_VU		USHRT_MAX
-
 struct udphdr;
 
 /**
@@ -50,10 +25,17 @@ struct udphdr;
 static inline struct iovec tap_hdr_iov(const struct ctx *c,
 				       struct tap_hdr *thdr)
 {
-	return (struct iovec){
+	struct iovec ret = {
 		.iov_base = thdr,
-		.iov_len = c->mode == MODE_PASST ? sizeof(*thdr) : 0,
 	};
+
+	if (c->vhost.fd != -1) {
+		ret.iov_len = sizeof(struct virtio_net_hdr_mrg_rxbuf);
+	} else {
+		ret.iov_len = c->mode == MODE_PASST ? sizeof(thdr->vnet_len) : 0;
+	}
+
+	return ret;
 }
 
 /**
