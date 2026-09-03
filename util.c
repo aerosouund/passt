@@ -36,9 +36,12 @@
 #include "epoll_ctl.h"
 #include "pasta.h"
 #include "serialise.h"
+#include "vhost.h"
 #ifdef HAS_GETRANDOM
 #include <sys/random.h>
 #endif
+
+#define GENERAL_NREGIONS 2
 
 /* Zero-filled buffer to pad 802.3 frames, up to 60 (ETH_ZLEN) bytes */
 uint8_t eth_pad[ETH_ZLEN] = { 0 };
@@ -454,6 +457,21 @@ int open_in_ns(const struct ctx *c, const char *path, int flags)
 	NS_CALL(do_open_in_ns, &arg);
 	errno = arg.err;
 	return arg.fd;
+}
+
+/**
+ * general_register_memory_region() - Register the general (non protocol specific) buffers 
+ *                                    into a memory struct so it can be shared with the kernel.
+ * @vhost_mem: The memory struct to register regions into
+ * @last_idx:  The last index at which memory region has been placed
+ */
+void general_register_memory_regions(union vhost_memory_u *vhost_mem, size_t *last_idx) {
+	if ((*last_idx + GENERAL_NREGIONS) > N_VHOST_REGIONS)
+		die("general: memory region overflow. maximum is %d, got %zu",
+		    N_VHOST_REGIONS, *last_idx + GENERAL_NREGIONS);
+	
+   	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(pkt_buf);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(eth_pad);
 }
 
 /**

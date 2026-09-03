@@ -145,6 +145,7 @@ int do_clone(int (*fn)(void *), char *stack_area, size_t stack_size, int flags,
 
 struct ctx;
 union sockaddr_inany;
+union vhost_memory_u;
 
 int sock_l4(const struct ctx *c, enum epoll_type type,
 	    const union sockaddr_inany *sa, const char *ifname);
@@ -170,6 +171,7 @@ int write_remainder(int fd, const struct iovec *iov, size_t iovcnt,
 int read_remainder(int fd, const struct iovec *iov, size_t cnt, size_t skip);
 bool snprintf_check(char *str, size_t size, const char *format, ...);
 long clamped_scale(long x, long y, long lo, long hi, long f);
+void general_register_memory_regions(union vhost_memory_u *vhost_mem, size_t *last_idx);
 
 /**
  * af_name() - Return name of an address family

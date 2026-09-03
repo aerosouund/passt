@@ -31,11 +31,13 @@
 #include "inany.h"
 #include "tcp_conn.h"
 #include "tcp_internal.h"
-#include "tcp_buf.h"
+#include "vhost.h"
 
 #define TCP_FRAMES_MEM			128
 #define TCP_FRAMES							   \
 	(c->mode == MODE_PASTA ? 1 : TCP_FRAMES_MEM)
+
+#define TCP_NREGIONS 5
 
 /* Static buffers */
 
@@ -73,6 +75,24 @@ void tcp_update_l2_buf(const unsigned char *eth_d)
 
 	for (i = 0; i < TCP_FRAMES_MEM; i++)
 		eth_update_mac(&tcp_eth_hdr[i], eth_d, NULL);
+}
+
+/**
+ * tcp_register_memory_region() - Register the TCP specific buffers into a memory
+ *                                struct so it can be shared with the kernel.
+ * @vhost_mem: The memory struct to register regions into
+ * @last_idx:  The last index at which memory region has been placed
+ */
+void tcp_register_memory_regions(union vhost_memory_u *vhost_mem, size_t *last_idx) {
+	if ((*last_idx + TCP_NREGIONS) > N_VHOST_REGIONS)
+		die("tcp: memory region overflow. maximum is %d, got %zu",
+		    N_VHOST_REGIONS, *last_idx + TCP_NREGIONS);
+	
+   	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(tcp_payload_tap_hdr);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(tcp4_payload_ip);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(tcp6_payload_ip);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(tcp_payload);
+	vhost_mem->mem.regions[(*last_idx)++] = VHOST_MEMORY_REGION(tcp_eth_hdr);
 }
 
 /**
