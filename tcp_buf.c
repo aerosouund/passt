@@ -21,6 +21,7 @@
 #include <netinet/ip.h>
 
 #include <netinet/tcp.h>
+#include <linux/virtio_net.h>
 
 #include "util.h"
 #include "ip.h"
@@ -44,7 +45,7 @@
 /* Ethernet header for IPv4 and IPv6 frames */
 static struct ethhdr		tcp_eth_hdr[TCP_FRAMES_MEM];
 
-static struct tap_hdr		tcp_payload_tap_hdr[TCP_FRAMES_MEM];
+static struct virtio_net_hdr_mrg_rxbuf tcp_payload_tap_hdr[TCP_FRAMES_MEM];
 
 /* IP headers for IPv4 and IPv6 */
 static struct iphdr		tcp4_payload_ip[TCP_FRAMES_MEM];
@@ -113,7 +114,7 @@ void tcp_sock_iov_init(const struct ctx *c)
 	for (i = 0; i < TCP_FRAMES_MEM; i++) {
 		struct iovec *iov = tcp_l2_iov[i];
 
-		iov[TCP_IOV_TAP] = tap_hdr_iov(c, &tcp_payload_tap_hdr[i]);
+		iov[TCP_IOV_TAP] = tap_hdr_iov(c, (struct tap_hdr *)&tcp_payload_tap_hdr[i]);
 		iov[TCP_IOV_ETH].iov_len = sizeof(struct ethhdr);
 		iov[TCP_IOV_PAYLOAD].iov_base = &tcp_payload[i];
 		iov[TCP_IOV_ETH_PAD].iov_base = eth_pad;
@@ -216,7 +217,12 @@ static void tcp_l2_buf_fill_headers(const struct ctx *c,
 
 	l2len = tcp_fill_headers(c, conn, eh, ip4h, ip6h, th, &tail,
 				 iov_tail_size(&tail), csum_flags, seq);
-	tap_hdr_update(taph, l2len);
+
+	/* With vhost-net this buffer holds a virtio-net header, which a tap
+	 * one must not be written over
+	 */
+	if (c->vhost.fd == -1)
+		tap_hdr_update(taph, l2len);
 }
 
 /**
