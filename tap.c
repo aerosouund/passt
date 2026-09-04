@@ -38,6 +38,7 @@
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/if_ether.h>
+#include <sys/eventfd.h>
 
 #include <linux/if_tun.h>
 #include <linux/icmpv6.h>
@@ -61,6 +62,7 @@
 #include "vhost_user.h"
 #include "vu_common.h"
 #include "epoll_ctl.h"
+#include "vhost.h"
 
 /* Maximum allowed frame lengths (including L2 header) */
 
@@ -1446,7 +1448,11 @@ static void tap_start_connection(const struct ctx *c)
 		break;
 	}
 
-	epoll_add(c->epollfd, EPOLLIN | EPOLLRDHUP, ref);
+	/* With vhost-net running, the kernel reads the tap fd for us and
+	 * notifies us on the call eventfd, so we mustn't watch it ourselves
+	 */
+	if (c->vhost.fd == -1)
+		epoll_add(c->epollfd, EPOLLIN | EPOLLRDHUP, ref);
 
 	if (!tap_is_ready(c))
 		return;
@@ -1515,6 +1521,89 @@ void tap_listen_handler(struct ctx *c, uint32_t events)
 }
 
 /**
+ * consume_one_rx_descriptor() - Consume one used from-guest descriptor
+ * @len:	Set to the length of data written by the kernel
+ *
+ * Pops a single entry from the used ring, advancing our read cursor and the
+ * count of descriptors awaiting refill announcement.
+ *
+ * NOTE: This function assumes the kernel is going to post single descriptors
+ * always, No chains. If that changes, we would need to increment num_free
+ * as we advertise back to the kernel the free descriptors by the length of the chain.
+ *
+ * Return: pointer to the packet buffer, or NULL if no data is available
+ */
+static void *consume_one_rx_descriptor(size_t *len)
+{
+	struct vring_used_pasta *used = &vring_used_all[VHOST_AVAIL_Q_IDX].used;
+	uint16_t used_idx, last_used;
+	uint32_t i;
+
+	used_idx = le16toh(used->idx);
+
+	smp_rmb();
+
+	/* If the kernel's used index matches ours, we've consumed everything
+	 * it has posted
+	 */
+	if (used_idx == vhost_vq_state[VHOST_AVAIL_Q_IDX].last_used_idx) {
+		*len = 0;
+		return NULL;
+	}
+
+	last_used = vhost_vq_state[VHOST_AVAIL_Q_IDX].last_used_idx % VHOST_NDESCS;
+	i = le32toh(used->ring[last_used].id);
+	*len = le32toh(used->ring[last_used].len);
+
+	if (i != last_used)
+		die("vhost: id %u at used position %u", i, last_used);
+
+	/* The kernel has queued for us something we cannot receive */
+	if (*len > VHOST_DESC_BYTES)
+		die("vhost: id %u len %zu > %zu", i, *len,
+		    (size_t)VHOST_DESC_BYTES);
+
+	vhost_vq_state[VHOST_AVAIL_Q_IDX].last_used_idx++;
+	vhost_vq_state[VHOST_AVAIL_Q_IDX].num_free++;
+
+	return pkt_buf + i * VHOST_DESC_BYTES;
+}
+
+/**
+ * tap_vhost_input() - Handle frames the kernel wrote to the from-guest queue
+ * @c:		Execution context
+ * @ref:	epoll reference
+ * @now:	Current timestamp
+ */
+void tap_vhost_input(struct ctx *c, union epoll_ref ref,
+		     const struct timespec *now)
+{
+	struct virtio_net_hdr_mrg_rxbuf *hdr;
+	struct iov_tail data;
+	size_t len;
+
+	eventfd_read(ref.fd, (eventfd_t[]){ 0 });
+
+	tap_flush_pools();
+
+	while ((hdr = consume_one_rx_descriptor(&len))) {
+		/* a valid receive is one where there is a virtio net header followed by atleast sizeof(struct ethhdr) bytes */
+		if (len < (sizeof(*hdr) + sizeof(struct ethhdr))) {
+			warn("vhost: invalid len %lu", len);
+			continue;
+		}
+
+		/* Skip over the vnet header, add the packet without it */
+		data = IOV_TAIL_FROM_BUF((void *)(hdr + 1),
+					 len - sizeof(*hdr), 0);
+		tap_add_packet(c, &data, now);
+	}
+
+	tap_handler(c, now);
+	vhost_rx_descriptor_handoff(c);
+}
+
+/**
  * tap_ns_tun() - Get tuntap fd in namespace
  * @c:		Execution context
  *
@@ -1555,10 +1644,31 @@ static int tap_ns_tun(void *arg)
  */
 static void tap_sock_tun_init(struct ctx *c)
 {
+	int i;
+
 	if (!c->splice_only) {
 		NS_CALL(tap_ns_tun, c);
 		if (c->fd_tap == -1)
 			die("Failed to set up tap device in namespace");
+	}
+
+	/* Nothing else here runs if this fails: c->vhost.fd stays -1 and we
+	 * carry on reading the tap fd ourselves, unless acceleration was
+	 * explicitly asked for
+	 */
+	if (c->vhost.mode != VHOST_MODE_OFF && vhost_setup_net(c) < 0 &&
+	    c->vhost.mode == VHOST_MODE_ON)
+		die("vhost-net is not available");
+
+	if (c->vhost.fd != -1) {
+		for (i = 0; i < ARRAY_SIZE(c->vhost.vq); i++)
+			vhost_setup_eventfds(c, i);
+
+		if (vhost_setup_memory_table(c) < 0)
+			die_perror("VHOST_SET_MEM_TABLE ioctl failed");
+
+		for (i = 0; i < ARRAY_SIZE(c->vhost.vq); i++)
+			vhost_set_vring(c, i, c->fd_tap);
 	}
 
 	pasta_ns_conf(c);

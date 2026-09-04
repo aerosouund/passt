@@ -305,6 +305,12 @@ static void passt_worker(void *opaque, int nfds, struct epoll_event *events)
 		case EPOLL_TYPE_CONF:
 			conf_handler(c, eventmask);
 			break;
+		case EPOLL_TYPE_VHOST_CALL:
+			tap_vhost_input(c, ref, &now);
+			break;
+		case EPOLL_TYPE_VHOST_ERROR:
+			die("Error on vhost-kernel socket");
+			break;
 		default:
 			/* Can't happen */
 			assert(0);
