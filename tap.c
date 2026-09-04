@@ -489,10 +489,6 @@ static size_t tap_send_frames_vhost(const struct ctx *c,
 	vhost_kick(&vring_used_all[VHOST_USED_Q_IDX].used,
 		   c->vhost.vq[VHOST_USED_Q_IDX].kick_fd);
 
-	/* wait until the kernel finishes processing this send */
-	while (avail->idx != vring_used_all[1].used.idx)
-		;
-
 	return processed_frames;
 }
 
@@ -520,7 +516,7 @@ static size_t tap_send_frames_pasta(const struct ctx *c,
 	size_t i;
 
 	if (vhost)
-		return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
+	 	return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
 
 	for (i = 0; i < nbufs; i += bufs_per_frame) {
 		ssize_t rc = writev(c->fd_tap, iov + i, bufs_per_frame);
