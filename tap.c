@@ -124,45 +124,6 @@ unsigned long tap_l2_max_len(const struct ctx *c)
 }
 
 /**
- * tap_send_single() - Send a single frame
- * @c:		Execution context
- * @data:	Packet buffer
- * @l2len:	Total L2 packet length
- */
-void tap_send_single(const struct ctx *c, const void *data, size_t l2len)
-{
-	uint8_t padded[ETH_ZLEN] = { 0 };
-	struct iovec iov[2];
-	size_t iovcnt = 0;
-	uint32_t vnet_len;
-
-	if (l2len < ETH_ZLEN) {
-		memcpy(padded, data, l2len);
-		data = padded;
-		l2len = ETH_ZLEN;
-	}
-
-	vnet_len = htonl(l2len);
-
-	switch (c->mode) {
-	case MODE_PASST:
-		iov[iovcnt] = IOV_OF_LVALUE(vnet_len);
-		iovcnt++;
-		/* fall through */
-	case MODE_PASTA:
-		iov[iovcnt].iov_base = (void *)data;
-		iov[iovcnt].iov_len = l2len;
-		iovcnt++;
-
-		tap_send_frames(c, iov, iovcnt, 1);
-		break;
-	case MODE_VU:
-		vu_send_single(c, data, l2len);
-		break;
-	}
-}
-
-/**
  * tap_push_l2h() - Build an L2 header for an inbound packet
  * @c:		Execution context
  * @buf:	Buffer address at which to generate header
@@ -498,6 +459,76 @@ static size_t tap_send_frames_passt(const struct ctx *c,
 }
 
 /**
+ * tap_l2_offset() - Backend specific header size preceding each L2 frame
+ * @c:		Execution context
+ *
+ * Return: offset of the L2 frame within each frame's first buffer
+ */
+static size_t tap_l2_offset(const struct ctx *c)
+{
+	if (c->mode == MODE_PASST)
+		return sizeof(uint32_t);	/* vnet_len */
+
+	if (c->vhost.fd != -1)
+		return VNET_HLEN;
+
+	return 0;
+}
+
+/**
+ * tap_send_single() - Send a single frame
+ * @c:		Execution context
+ * @data:	Packet buffer
+ * @l2len:	Total L2 packet length
+ */
+void tap_send_single(const struct ctx *c, const void *data, size_t l2len)
+{
+	uint8_t padded[ETH_ZLEN] = { 0 };
+	struct iovec iov[2];
+	uint32_t vnet_len;
+	size_t iovcnt = 0;
+	size_t m = 0;
+
+	if (l2len < ETH_ZLEN) {
+		memcpy(padded, data, l2len);
+		data = padded;
+		l2len = ETH_ZLEN;
+	}
+
+	vnet_len = htonl(l2len);
+
+	switch (c->mode) {
+	case MODE_PASST:
+		/* create an iov for the length */
+		iov[iovcnt] = IOV_OF_LVALUE(vnet_len);
+		iovcnt++;
+		/* create the data iov */
+		iov[iovcnt].iov_base = (void *)data;
+		iov[iovcnt].iov_len = l2len;
+		iovcnt++;
+
+		m = tap_send_frames_passt(c, iov, iovcnt, 1);
+		break;
+	case MODE_PASTA:
+		/* don't create a length iov in the case of pasta */
+		iov[iovcnt].iov_base = (void *)data;
+		iov[iovcnt].iov_len = l2len;
+		iovcnt++;
+
+		m = tap_send_frames_pasta(c, iov, iovcnt, 1);
+		break;
+	case MODE_VU:
+		vu_send_single(c, data, l2len);
+		return;
+	}
+
+	if (!m)
+		debug("tap: failed to send a single frame");
+
+	pcap_multiple(iov, iovcnt, m, tap_l2_offset(c));
+}
+
+/**
  * tap_send_frames() - Send out multiple prepared frames
  * @c:			Execution context
  * @iov:		Array of buffers, each containing one frame (with L2 headers)
@@ -537,8 +568,7 @@ size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
 		debug("tap: failed to send %zu frames of %zu",
 		      nframes - m, nframes);
 
-	pcap_multiple(iov, bufs_per_frame, m,
-		      c->mode == MODE_PASST ? sizeof(uint32_t) : 0);
+	pcap_multiple(iov, bufs_per_frame, m, tap_l2_offset(c));
 
 	return m;
 }

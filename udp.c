@@ -103,6 +103,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <linux/errqueue.h>
+#include <linux/virtio_net.h>
 
 #include "checksum.h"
 #include "util.h"
@@ -149,12 +150,16 @@ static struct ethhdr udp_eth_hdr[UDP_MAX_FRAMES];
  * struct udp_meta_t - Pre-cooked headers for UDP packets
  * @ip6h:	Pre-filled IPv6 header (except for payload_len and addresses)
  * @ip4h:	Pre-filled IPv4 header (except for tot_len and saddr)
- * @taph:	Tap backend specific header
+ * @vnet_hdr:	virtio-net header, used when sending through vhost-net
+ * @taph:	Tap backend specific header, used otherwise
  */
 static struct udp_meta_t {
 	struct ipv6hdr ip6h;
 	struct iphdr ip4h;
-	struct tap_hdr taph;
+	union {
+		struct virtio_net_hdr_mrg_rxbuf vnet_hdr;
+		struct tap_hdr taph;
+	};
 }
 #ifdef __AVX2__
 __attribute__ ((aligned(32)))
@@ -356,13 +361,15 @@ static void udp_tap_pad(struct iovec *iov)
 
 /**
  * udp_tap_prepare() - Convert one datagram into a tap frame
+ * @c:      Execution context
  * @mmh:	Receiving mmsghdr array
  * @idx:	Index of the datagram to prepare
  * @tap_omac:	MAC address of remote endpoint as seen from the guest
  * @toside:	Flowside for destination side
  * @no_udp_csum: Do not set UDP checksum
  */
-static void udp_tap_prepare(const struct mmsghdr *mmh,
+static void udp_tap_prepare(const struct ctx *c,
+				const struct mmsghdr *mmh,
 			    unsigned int idx,
 			    const uint8_t *tap_omac,
 			    const struct flowside *toside,
@@ -384,8 +391,10 @@ static void udp_tap_prepare(const struct mmsghdr *mmh,
 		udp_update_hdr6(&bm->ip6h, uh, &payload, toside,
 			        mmh[idx].msg_len, no_udp_csum);
 
-		l2len = MAX(l4len + sizeof(bm->ip6h) + ETH_HLEN, ETH_ZLEN);
-		tap_hdr_update(&bm->taph, l2len);
+		if (c->mode == MODE_PASST) {
+			l2len = MAX(l4len + sizeof(bm->ip6h) + ETH_HLEN, ETH_ZLEN);
+			tap_hdr_update(&bm->taph, l2len);
+		}
 
 		eh->h_proto = htons_constant(ETH_P_IPV6);
 		(*tap_iov)[UDP_IOV_IP] = IOV_OF_LVALUE(bm->ip6h);
@@ -393,8 +402,10 @@ static void udp_tap_prepare(const struct mmsghdr *mmh,
 		udp_update_hdr4(&bm->ip4h, uh, &payload, toside,
 			        mmh[idx].msg_len, no_udp_csum);
 
-		l2len = MAX(l4len + sizeof(bm->ip4h) + ETH_HLEN, ETH_ZLEN);
-		tap_hdr_update(&bm->taph, l2len);
+		if (c->mode == MODE_PASST) {
+			l2len = MAX(l4len + sizeof(bm->ip4h) + ETH_HLEN, ETH_ZLEN);
+			tap_hdr_update(&bm->taph, l2len);
+		}
 
 		eh->h_proto = htons_constant(ETH_P_IP);
 		(*tap_iov)[UDP_IOV_IP] = IOV_OF_LVALUE(bm->ip4h);
@@ -867,7 +878,7 @@ static void udp_buf_sock_to_tap(const struct ctx *c, int s, int n,
 		fwd_neigh_mac_get(c, &toside->oaddr, omac);
 
 	for (i = 0; i < n; i++)
-		udp_tap_prepare(udp_mh_recv, i, omac, toside, false);
+		udp_tap_prepare(c, udp_mh_recv, i, omac, toside, false);
 
 	tap_send_frames(c, &udp_l2_iov[0][0], UDP_NUM_IOVS, n);
 }
