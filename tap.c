@@ -360,11 +360,149 @@ void tap_icmp6_send(const struct ctx *c,
 }
 
 /**
+ * tx_reap() - Reclaim the descriptors the kernel has already processed
+ */
+static void tx_reap(void)
+{
+	struct vring_used_pasta *used = &vring_used_all[VHOST_USED_Q_IDX].used;
+	uint16_t used_idx = le16toh(used->idx);
+
+	smp_rmb();
+
+	/* increment last_used_idx until it reaches the kernel's used index */
+	while (vhost_vq_state[VHOST_USED_Q_IDX].last_used_idx != used_idx) {
+		uint16_t last_used, desc_id;
+
+		last_used = vhost_vq_state[VHOST_USED_Q_IDX].last_used_idx % VHOST_NDESCS;
+		desc_id = le32toh(used->ring[last_used].id);
+
+		for (;;) {
+			/* keep going until we find a descriptor without the
+			 * next flag
+			 */
+			vhost_vq_state[VHOST_USED_Q_IDX].num_free++;
+			if (!(le16toh(vring_desc[VHOST_USED_Q_IDX][desc_id].flags) &
+			      VRING_DESC_F_NEXT))
+				break;
+
+			/* this descriptor wasn't the last, set desc_id to the
+			 * next one and keep going
+			 */
+			desc_id = le16toh(vring_desc[VHOST_USED_Q_IDX][desc_id].next);
+		}
+
+		vhost_vq_state[VHOST_USED_Q_IDX].last_used_idx++;
+	}
+}
+
+/**
+ * tap_send_frames_vhost() - Send multiple frames to the pasta tap
+ * @c:			Execution context
+ * @iov:		Array of buffers
+ * @bufs_per_frame:	Number of buffers (iovec entries) per frame
+ * @nframes:		Number of frames to send
+ *
+ * @iov must have total length @bufs_per_frame * @nframes, with each set of
+ * @bufs_per_frame contiguous buffers representing a single frame.
+ *
+ * Return: number of frames successfully sent
+ */
+static size_t tap_send_frames_vhost(const struct ctx *c,
+				    const struct iovec *iov,
+				    size_t bufs_per_frame, size_t nframes)
+{
+	struct vring_avail_pasta *avail =
+		&vring_avail_all[VHOST_USED_Q_IDX].avail;
+	size_t processed_frames = 0;
+	size_t i;
+
+	/* reclaim descriptors if we don't have enough available buffers to
+	 * perform this send
+	 */
+	if (vhost_vq_state[VHOST_USED_Q_IDX].num_free < bufs_per_frame * nframes)
+		tx_reap();
+
+	for (i = 0; i < nframes; i++) {
+		uint16_t head;
+		size_t j;
+
+		/* it's likely that tx_reap returned to us less than
+		 * bufs_per_frame descs
+		 */
+		if (vhost_vq_state[VHOST_USED_Q_IDX].num_free < bufs_per_frame)
+			break;
+
+		/* set the index of the avail ring in the tx queue to be our
+		 * last_used_idx
+		 */
+		head = vhost_vq_state[VHOST_USED_Q_IDX].next_free % VHOST_NDESCS;
+		avail->ring[(avail->idx + i) % VHOST_NDESCS] = htole16(head);
+
+		/* we will be consuming bufs_per_frame descriptors for every
+		 * frame, decrement the local num_free
+		 */
+		vhost_vq_state[VHOST_USED_Q_IDX].num_free -= bufs_per_frame;
+
+		for (j = 0; j < bufs_per_frame; ++j) {
+			uint16_t next =
+				vhost_vq_state[VHOST_USED_Q_IDX].next_free %
+				VHOST_NDESCS;
+			/* get the last_used_idx descriptor */
+			struct vring_desc_pasta *desc =
+				&vring_desc[VHOST_USED_Q_IDX][next];
+			const struct iovec *iov_i;
+
+			/* the iov variable contains the iovecs for all frames
+			 * we will send. access a single fragment of a frame
+			 * (each fragment is one of tcp_iov_parts) denoted by
+			 * iov at index i (index of the frame being processed)
+			 * * bufs_per_frame plus j (the index of the fragment
+			 * being processed)
+			 */
+			iov_i = &iov[i * bufs_per_frame + j];
+
+			/* set that descriptor's address to the base of the iov
+			 * and set the VRING_DESC_F_NEXT flag on the descriptor
+			 * if its not the last frame fragment, so that the
+			 * guest would recieve the entire frame in one go.
+			 */
+			desc->addr = (uint64_t)iov_i->iov_base;
+			desc->len = iov_i->iov_len;
+			desc->flags = (j == bufs_per_frame - 1) ?
+				      0 : htole16(VRING_DESC_F_NEXT);
+
+			vhost_vq_state[VHOST_USED_Q_IDX].next_free++;
+		}
+
+		processed_frames++;
+	}
+
+	/* we didn't process any frames, no need to notify the kernel */
+	if (!processed_frames)
+		return 0;
+
+	smp_wmb();
+
+	/* we will have used nframes descriptor chains */
+	avail->idx = htole16(le16toh(avail->idx) + processed_frames);
+
+	vhost_kick(&vring_used_all[VHOST_USED_Q_IDX].used,
+		   c->vhost.vq[VHOST_USED_Q_IDX].kick_fd);
+
+	/* wait until the kernel finishes processing this send */
+	while (avail->idx != vring_used_all[1].used.idx)
+		;
+
+	return processed_frames;
+}
+
+/**
  * tap_send_frames_pasta() - Send multiple frames to the pasta tap
  * @c:			Execution context
  * @iov:		Array of buffers
  * @bufs_per_frame:	Number of buffers (iovec entries) per frame
  * @nframes:		Number of frames to send
+ * @vhost:		Send through vhost-net rather than writing to the tap
  *
  * @iov must have total length @bufs_per_frame * @nframes, with each set of
  * @bufs_per_frame contiguous buffers representing a single frame.
@@ -375,10 +513,14 @@ void tap_icmp6_send(const struct ctx *c,
  */
 static size_t tap_send_frames_pasta(const struct ctx *c,
 				    const struct iovec *iov,
-				    size_t bufs_per_frame, size_t nframes)
+				    size_t bufs_per_frame, size_t nframes,
+				    bool vhost)
 {
 	size_t nbufs = bufs_per_frame * nframes;
 	size_t i;
+
+	if (vhost)
+		return tap_send_frames_vhost(c, iov, bufs_per_frame, nframes);
 
 	for (i = 0; i < nbufs; i += bufs_per_frame) {
 		ssize_t rc = writev(c->fd_tap, iov + i, bufs_per_frame);
@@ -515,7 +657,7 @@ void tap_send_single(const struct ctx *c, const void *data, size_t l2len)
 		iov[iovcnt].iov_len = l2len;
 		iovcnt++;
 
-		m = tap_send_frames_pasta(c, iov, iovcnt, 1);
+		m = tap_send_frames_pasta(c, iov, iovcnt, 1, false);
 		break;
 	case MODE_VU:
 		vu_send_single(c, data, l2len);
@@ -553,7 +695,8 @@ size_t tap_send_frames(const struct ctx *c, const struct iovec *iov,
 
 	switch (c->mode) {
 	case MODE_PASTA:
-		m = tap_send_frames_pasta(c, iov, bufs_per_frame, nframes);
+		m = tap_send_frames_pasta(c, iov, bufs_per_frame, nframes,
+					  c->vhost.fd != -1);
 		break;
 	case MODE_PASST:
 		m = tap_send_frames_passt(c, iov, bufs_per_frame, nframes);
